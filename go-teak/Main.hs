@@ -9,6 +9,7 @@ module Main where
 import           Control.Monad      (forM_)
 import           Language.Go.Parser (goParse)
 import           System.Environment (getArgs)
+import           Text.Groom         (groom)
 
 main :: IO ()
 main = do
@@ -16,4 +17,4 @@ main = do
   forM_ files $ \f -> do
     s <- readFile f
     print f
-    print $ goParse f s
+    putStrLn $ groom $ goParse f s
