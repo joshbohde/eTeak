@@ -7,18 +7,21 @@
 module Language.SimpleGo.Balsa  (
   synthesizeFile,
   typeDecl,
-  TranslateM, M.runTranslateT, pos
+  TranslateM, M.runTranslateT, pos,
+  runExprT, primExp, simpleExp
   ) where
 
 import           Control.Monad                        (forM_)
 import           Control.Monad.Except                 (ExceptT (..), runExceptT,
                                                        withExceptT)
-import           Control.Monad.Trans                  (liftIO)
+import           Control.Monad.Trans                  (lift, liftIO)
 import           Data.Maybe                           (fromMaybe)
 import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
+import           Control.Monad.Trans.Cont             (ContT (..), callCC,
+                                                       mapContT, runContT)
 import           Language.Helpers                     (bind, eval, finish, teak,
                                                        writeGates, writeTeak)
 import           Language.SimpleGo.AST
@@ -27,6 +30,7 @@ import           Language.SimpleGo.Balsa.Builtins     (bool, byte, string)
 import qualified Language.SimpleGo.Balsa.Builtins     as Builtins
 import           Language.SimpleGo.Balsa.Declarations (Context, Decl)
 import qualified Language.SimpleGo.Balsa.Declarations as D
+import qualified Language.SimpleGo.Balsa.DeclScratch  as S
 import qualified Language.SimpleGo.Eval               as Eval
 import           Language.SimpleGo.Monad              (declare, unsupported)
 import qualified Language.SimpleGo.Monad              as M
@@ -116,10 +120,11 @@ declareTopLevel (Type (Id id') typ) = do
 --declareTopLevel f = M.unsupported "top level binding" f
 declareTopLevel f@(Func (Id id') sig block) = declare id' =<< decl
   where
+
     decl = if isProc sig
            then procedure
            else M.unsupported "function" f
-    isProc = const True
+    isProc (Signature i o) = True
     procedure = do
       M.newContext
       declareSig sig
@@ -317,7 +322,6 @@ cmd (StmtSelect cases) = PT.SelectCmd pos False <$> traverse chanCase cases
 cmd s = unsupported "statment" s
 
 
-
 simpleCmd :: Simp -> TranslateM PT.Cmd
 simpleCmd Empty = return PT.NoCmd
 simpleCmd (Inc e) = simpleCmd $ Assign e $ BinOp Operators.Add e (Prim (LitInt 1))
@@ -372,3 +376,96 @@ typedExpr' t (UnOp Minus e) = PT.BinExpr pos t PT.BinSub (PT.ValueExpr pos t (PT
 typedExpr' t (UnOp Not e) = PT.UnExpr pos t PT.UnNot <$> typedExpr' t e
 typedExpr' t (BinOp op e e') = PT.BinExpr pos t <$> binOp op <*> typedExpr' t e <*> typedExpr' t e'
 typedExpr' _ e = M.unsupported "expr" e
+
+
+type ExprT m r = ContT r m PT.Expr
+
+runExprT :: ExprT m r -> (PT.Expr -> m r) -> m r
+runExprT = runContT
+
+--exp :: Exp -> TranslateM PT.Expr
+--exp (Left e) = e
+--exp (Right c) = undefined
+
+
+exprExp :: Expr -> ExprT TranslateM PT.Cmd
+exprExp (Prim prim) = primExp prim
+exprExp (UnOp Plus e) = PT.BinExpr pos PT.NoType PT.BinAdd (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$> exprExp e
+exprExp (UnOp Minus e) = PT.BinExpr pos PT.NoType PT.BinSub (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$> exprExp e
+exprExp (UnOp Not e) = PT.UnExpr pos PT.NoType PT.UnNot <$> exprExp e
+exprExp (BinOp op e e') = PT.BinExpr pos PT.NoType <$> lift (binOp op) <*> exprExp e <*> exprExp e'
+exprExp e = lift $ M.unsupported "expr" e
+
+primExp :: Prim -> ExprT TranslateM PT.Cmd
+primExp (LitInt i) = return $ PT.ValueExpr pos byte (PT.IntValue i)
+primExp (LitStr s) = return $ PT.ValueExpr pos string (PT.StringValue (unpack s))
+primExp (Qual (Just struct) id) = return $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id)
+primExp (Qual Nothing id') = return $ PT.NameExpr pos (unId id')
+--primExp c@(Call (Qual Nothing (Id "append")) [arg] (Just f)) = callCC $ PT.AppendExpr pos PT.NoType <$> toExpr arg <*> toExpr f
+---- special case type coercions and builtins
+--primExp c@(Call (Qual Nothing id') [arg] Nothing) = case lookup (unId id') Builtins.types of
+--  Just typ -> callCC $ PT.CastExpr pos typ <$> toExpr arg
+--  Nothing -> case lookup (unId id') Builtins.functions of
+--    Just f -> callCC $ f <$> toExpr arg
+--    Nothing -> M.unsupported "call expression" c
+primExp (LitFunc sig block) = do
+  (c, i) <- lift $ do
+    M.newContext
+    id' <- M.fresh
+    declareTopLevel $ Func (Id id') sig block
+    c' <- D.declContext <$> M.popContext
+    return (c', id')
+  mapContT (PT.BlockCmd pos c <$>) (return $ PT.NameExpr pos (unpack i))
+primExp (Call p es me) = do
+  callable <- primExp p
+  case callable of
+    (PT.NameExpr _ id') ->
+      ContT $ \_ -> PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext . map PT.ExprProcActual <$> mapM toExpr es
+    _ -> lift $ M.unsupported "callable" callable
+primExp s@(Slice p me (Just end)) = slice
+  where
+    slice = PT.SliceExpr pos <$> primExp p <*> exprExp start <*> exprExp end
+    start = fromMaybe (Prim (LitInt 0)) me
+primExp s@(Slice _ _ Nothing) = lift $ M.unsupported "slice expression with no end" s
+primExp (Index p e) = PT.IndexExpr pos <$> primExp p <*> exprExp e
+primExp (Paren e) = exprExp e
+primExp s = lift $ M.unsupported  "primitive" s
+
+simpleExp :: Simp -> TranslateM PT.Cmd
+simpleExp Empty = return PT.NoCmd
+simpleExp (Inc e) = simpleExp $ Assign e $ BinOp Operators.Add e (Prim (LitInt 1))
+simpleExp (Dec e) = simpleExp $ Assign e $ BinOp Operators.Subtract e (Prim (LitInt 1))
+simpleExp (Send chan e) = runContT ma return
+  where
+    ma = do
+      chan <- exprExp chan
+      case chan of
+        (PT.NameExpr p id) -> PT.OutputCmd pos (PT.NameChan pos id) <$> exprExp e
+        _ -> lift $ unsupported "chan expression" chan
+--simpleExp (SimpVar (Id id') (UnOp Receive (Prim (Qual Nothing (Id chan))))) = do
+--  chan' <- M.lookup chan
+--  case chan' of
+--    Nothing -> M.notDefined (unpack chan)
+--    Just t -> do
+--      r <- receiveType t
+--      declare id' (D.Var r Nothing)
+--      return $ PT.InputCmd pos (PT.NameChan pos (unpack chan)) (PT.NameLvalue pos (unpack id'))
+--    where
+--      receiveType :: D.Decl -> TranslateM PT.Type
+--      receiveType (D.In t) = return t
+--      receiveType (D.Chan t) = return t
+--      receiveType s = M.typeError "chan or <-chan" (show s)
+simpleExp (SimpleExpr e) = runContT (exprExp e) (const $ return PT.NoCmd)
+simpleExp s = unsupported "simple expression " s
+
+
+data Args = Args [Expr] (Maybe Expr)
+
+print = S.Func f Nothing
+  where
+    f (S.Args es (Just e)) = do
+      args <- mapM toExpr (es ++ [e])
+      return ([], PT.PrintCmd pos args)
+    f (S.Args es Nothing) = do
+      args <- mapM toExpr es
+      return ([], PT.PrintCmd pos args)
