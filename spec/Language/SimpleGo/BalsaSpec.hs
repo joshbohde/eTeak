@@ -3,6 +3,7 @@
 
 module Language.SimpleGo.BalsaSpec where
 
+import qualified Context                              as C
 import qualified Language.SimpleGo.AST                as S
 import qualified Language.SimpleGo.Balsa              as B
 import qualified Language.SimpleGo.Balsa.Builtins     as B
@@ -11,7 +12,10 @@ import qualified ParseTree                            as PT
 
 import           Test.Hspec
 
-runExpr p = B.runTranslateT $ B.runExprT (B.primExp p) (return . PT.SinkCmd D.pos)
+runExpr p = B.runTranslateT $ B.runExprT (B.primExp p) f
+  where
+    f Nothing = return $ PT.NoCmd
+    f (Just a) = return $ PT.SinkCmd D.pos a
 
 spec :: Spec
 spec = do
@@ -28,7 +32,7 @@ spec = do
       t `shouldBe` (Right $ PT.SinkCmd D.pos (PT.ValueExpr B.pos B.byte (PT.IntValue 1)))
     it "should handle a call" $ do
       t <- runExpr $ S.Call (S.Qual Nothing (S.Id "test")) [] Nothing
-      t `shouldBe` (Right $ PT.SinkCmd D.pos (PT.ValueExpr B.pos B.byte (PT.IntValue 1)))
+      t `shouldBe` (Right $ PT.SeqCmd D.pos [PT.CallCmd D.pos (PT.NameCallable D.pos "test") C.EmptyContext [], PT.NoCmd])
 
   describe "simpleExp" $ do
     it "should handle a send" $ do

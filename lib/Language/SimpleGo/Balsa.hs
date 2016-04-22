@@ -15,6 +15,7 @@ import           Control.Monad                        (forM_)
 import           Control.Monad.Except                 (ExceptT (..), runExceptT,
                                                        withExceptT)
 import           Control.Monad.Trans                  (lift, liftIO)
+import           Data.Functor.Compose                 (Compose (..))
 import           Data.Maybe                           (fromMaybe)
 import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
@@ -378,29 +379,46 @@ typedExpr' t (BinOp op e e') = PT.BinExpr pos t <$> binOp op <*> typedExpr' t e 
 typedExpr' _ e = M.unsupported "expr" e
 
 
-type ExprT m r = ContT r m PT.Expr
+type ExprT m r = ContT r m (Maybe PT.Expr)
+type ExprFT m r = ContT r m PT.Expr
 
-runExprT :: ExprT m r -> (PT.Expr -> m r) -> m r
+runExprT :: ExprT m r -> (Maybe PT.Expr -> m r) -> m r
 runExprT = runContT
 
 --exp :: Exp -> TranslateM PT.Expr
 --exp (Left e) = e
 --exp (Right c) = undefined
 
+a `andThen` (PT.SeqCmd p cmds) = PT.SeqCmd p (a : cmds)
+a `andThen` b = PT.SeqCmd pos [a,b]
+
+(<$$>) = fmap . fmap
+a <**> b = getCompose $ Compose a <*> Compose b
+
+mkExpr = return . Just
 
 exprExp :: Expr -> ExprT TranslateM PT.Cmd
 exprExp (Prim prim) = primExp prim
-exprExp (UnOp Plus e) = PT.BinExpr pos PT.NoType PT.BinAdd (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$> exprExp e
-exprExp (UnOp Minus e) = PT.BinExpr pos PT.NoType PT.BinSub (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$> exprExp e
-exprExp (UnOp Not e) = PT.UnExpr pos PT.NoType PT.UnNot <$> exprExp e
-exprExp (BinOp op e e') = PT.BinExpr pos PT.NoType <$> lift (binOp op) <*> exprExp e <*> exprExp e'
+exprExp (UnOp Plus e) = PT.BinExpr pos PT.NoType PT.BinAdd (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
+exprExp (UnOp Minus e) = PT.BinExpr pos PT.NoType PT.BinSub (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
+exprExp (UnOp Not e) = PT.UnExpr pos PT.NoType PT.UnNot <$$> exprExp e
+exprExp (BinOp op e e') = do
+  op' <- lift (binOp op)
+  PT.BinExpr pos PT.NoType op' <$$> exprExp e <**> exprExp e'
 exprExp e = lift $ M.unsupported "expr" e
 
+forceExp :: ExprT TranslateM r -> ExprFT TranslateM r
+forceExp ma = do
+  a <- ma
+  case a of
+    Nothing -> lift $ M.unsupported "expr" "Nothing expr"
+    Just a' -> return a'
+
 primExp :: Prim -> ExprT TranslateM PT.Cmd
-primExp (LitInt i) = return $ PT.ValueExpr pos byte (PT.IntValue i)
-primExp (LitStr s) = return $ PT.ValueExpr pos string (PT.StringValue (unpack s))
-primExp (Qual (Just struct) id) = return $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id)
-primExp (Qual Nothing id') = return $ PT.NameExpr pos (unId id')
+primExp (LitInt i) = mkExpr $ PT.ValueExpr pos byte (PT.IntValue i)
+primExp (LitStr s) = mkExpr $ PT.ValueExpr pos string (PT.StringValue (unpack s))
+primExp (Qual (Just struct) id) = mkExpr $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id)
+primExp (Qual Nothing id') = mkExpr $ PT.NameExpr pos (unId id')
 --primExp c@(Call (Qual Nothing (Id "append")) [arg] (Just f)) = callCC $ PT.AppendExpr pos PT.NoType <$> toExpr arg <*> toExpr f
 ---- special case type coercions and builtins
 --primExp c@(Call (Qual Nothing id') [arg] Nothing) = case lookup (unId id') Builtins.types of
@@ -415,19 +433,22 @@ primExp (LitFunc sig block) = do
     declareTopLevel $ Func (Id id') sig block
     c' <- D.declContext <$> M.popContext
     return (c', id')
-  mapContT (PT.BlockCmd pos c <$>) (return $ PT.NameExpr pos (unpack i))
+  mapContT (PT.BlockCmd pos c <$>) (mkExpr $ PT.NameExpr pos (unpack i))
 primExp (Call p es me) = do
   callable <- primExp p
   case callable of
-    (PT.NameExpr _ id') ->
-      ContT $ \_ -> PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext . map PT.ExprProcActual <$> mapM toExpr es
+    (Just (PT.NameExpr _ id')) -> do
+      exprs <- mapM (forceExp . exprExp) es
+      let
+        call = PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map PT.ExprProcActual exprs
+      mapContT (fmap (call `andThen`)) (return Nothing)
     _ -> lift $ M.unsupported "callable" callable
 primExp s@(Slice p me (Just end)) = slice
   where
-    slice = PT.SliceExpr pos <$> primExp p <*> exprExp start <*> exprExp end
+    slice = PT.SliceExpr pos <$$> primExp p <**> exprExp start <**> exprExp end
     start = fromMaybe (Prim (LitInt 0)) me
 primExp s@(Slice _ _ Nothing) = lift $ M.unsupported "slice expression with no end" s
-primExp (Index p e) = PT.IndexExpr pos <$> primExp p <*> exprExp e
+primExp (Index p e) = PT.IndexExpr pos <$$> primExp p <**> exprExp e
 primExp (Paren e) = exprExp e
 primExp s = lift $ M.unsupported  "primitive" s
 
@@ -440,7 +461,7 @@ simpleExp (Send chan e) = runContT ma return
     ma = do
       chan <- exprExp chan
       case chan of
-        (PT.NameExpr p id) -> PT.OutputCmd pos (PT.NameChan pos id) <$> exprExp e
+        (Just (PT.NameExpr p id)) -> PT.OutputCmd pos (PT.NameChan pos id) <$> forceExp (exprExp e)
         _ -> lift $ unsupported "chan expression" chan
 --simpleExp (SimpVar (Id id') (UnOp Receive (Prim (Qual Nothing (Id chan))))) = do
 --  chan' <- M.lookup chan
