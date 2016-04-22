@@ -13,10 +13,7 @@ import qualified ParseTree                            as PT
 import           Data.Either                          (isLeft)
 import           Test.Hspec
 
-runExpr p = B.runTranslateT $ B.runExprT (B.primExp p) f
-  where
-    f Nothing = return $ PT.NoCmd
-    f (Just a) = return $ PT.SinkCmd D.pos a
+runExpr p = B.runTranslateT $ B.runExprCmd (B.primExp p) id
 
 spec :: Spec
 spec = do
@@ -30,11 +27,13 @@ spec = do
   describe "primExp" $ do
     it "should handle the integer literal" $ do
       t <- runExpr $ S.LitInt 1
-      t `shouldBe` (Right $ PT.SinkCmd D.pos (PT.ValueExpr B.pos B.byte (PT.IntValue 1)))
+      t `shouldBe` (Right $ B.ExprCmd Nothing (Just (PT.ValueExpr B.pos B.byte (PT.IntValue 1))))
 
     it "should handle a call" $ do
       t <- runExpr $ S.Call (S.Qual Nothing (S.Id "test")) [] Nothing
-      t `shouldBe` (Right $ PT.SeqCmd D.pos [PT.CallCmd D.pos (PT.NameCallable D.pos "test") C.EmptyContext [], PT.NoCmd])
+      let
+        cmd = PT.SeqCmd D.pos [PT.CallCmd D.pos (PT.NameCallable D.pos "test") C.EmptyContext [], PT.NoCmd]
+      t `shouldBe` (Right $ B.ExprCmd (Just cmd) Nothing)
 
     it "should error on a type failure" $ do
       t <- runExpr $ S.Call (S.Qual Nothing (S.Id "print")) [(S.Prim (S.Call (S.Qual Nothing (S.Id "test")) [] Nothing))] Nothing
@@ -44,4 +43,6 @@ spec = do
     it "should handle a send" $ do
       let s = S.Send (S.Prim (S.Qual Nothing (S.Id "foo"))) (S.Prim (S.Qual Nothing (S.Id "bar")))
       t <- B.runTranslateT $ B.simpleExp s
-      t `shouldBe` (Right (PT.OutputCmd D.pos (PT.NameChan D.pos "foo") (PT.NameExpr D.pos "bar")))
+      let
+        c = (PT.OutputCmd D.pos (PT.NameChan D.pos "foo") (PT.NameExpr D.pos "bar"))
+      t `shouldBe` (Right $ B.ExprCmd (Just c) Nothing)

@@ -7,8 +7,7 @@
 module Language.SimpleGo.Balsa  (
   synthesizeFile,
   typeDecl,
-  TranslateM, M.runTranslateT, pos,
-  runExprT, primExp, simpleExp
+  TranslateM, M.runTranslateT, pos, primExp, simpleExp, runExprCmd, ExprCmd(..)
   ) where
 
 import           Control.Monad                        (forM_)
@@ -31,7 +30,6 @@ import           Language.SimpleGo.Balsa.Builtins     (bool, byte, string)
 import qualified Language.SimpleGo.Balsa.Builtins     as Builtins
 import           Language.SimpleGo.Balsa.Declarations (Context, Decl)
 import qualified Language.SimpleGo.Balsa.Declarations as D
-import qualified Language.SimpleGo.Balsa.DeclScratch  as S
 import qualified Language.SimpleGo.Eval               as Eval
 import           Language.SimpleGo.Monad              (declare, unsupported)
 import qualified Language.SimpleGo.Monad              as M
@@ -42,6 +40,44 @@ import qualified Report                               as R
 
 type TranslateM = M.TranslateT IO Decl
 
+-- ContT specialized for TranslateM
+-- For reference: runContT :: (a -> m r) -> m r
+
+-- This is necessary because some expressions need to set up the
+-- appropriate cmd context before the next command can run. For
+-- instance, calling a function literal requires a new block, with
+-- definitions setup for the literal, before the literal can be called.
+type Cont a b = ContT b TranslateM a
+
+runExprCmd :: Cont a ExprCmd -> (a -> Maybe PT.Expr) -> TranslateM ExprCmd
+runExprCmd ma f = runContT ma (return . ExprCmd Nothing . f)
+
+getCmd :: ExprCmd -> PT.Cmd
+getCmd (ExprCmd c _) = fromMaybe PT.NoCmd c
+
+-- If we don't need the expression, we can just throw it away.
+runSideEffects :: Cont a ExprCmd -> TranslateM PT.Cmd
+runSideEffects ma = getCmd <$> runExprCmd ma (const Nothing)
+
+-- Error if we require a command, otherwise return the expression
+simpleExpression :: Cont (Maybe PT.Expr) ExprCmd -> TranslateM PT.Expr
+simpleExpression ma = runExprCmd ma id >>= extract
+  where
+    extract e@(ExprCmd (Just c) _) = M.unsupported "expression requires commands to be run" e
+    extract (ExprCmd _ (Just e)) = return e
+    extract e = M.unsupported "ExprCmd" e
+
+
+
+-- A data type representing the commands necessary to run before the
+-- result of some expression is available. This is necessary because
+-- Go's Statements can sometimes be either a Balsa expression or statement, and
+-- Go's expressions can sometiems be either a Balsa expression or statement.
+-- This is visible in function application, where a byte(..) is an expression (has a return type of byte),
+data ExprCmd = ExprCmd
+               (Maybe PT.Cmd) -- The commands necessary to run before the expression is available
+               (Maybe PT.Expr) -- The expression
+               deriving (Show, Eq)
 
 pos :: R.Pos
 pos = D.pos
@@ -99,23 +135,22 @@ typeDecl (Struct fields) = D.Type <$> record
 typeDecl t = unsupported "type declaration" t
 
 declareTopLevel :: Declaration -> TranslateM ()
---declareTopLevel (Const (Id id') typ e) = toCmd $ do
---  e' <- forceExp e
---  return $ D.Const e'
---
+declareTopLevel (Const (Id id') typ e) = do
+  e' <- simpleExpression $ exprExp e
+  declare id' $ D.Const e'
 -- err, this should be type checked, but need to refactor decls
 declareTopLevel (Var i typ' (Prim f@(LitFunc sig' block))) = declareTopLevel (Func i sig' block)
 declareTopLevel (Var (Id id') _ (Prim (Make (Channel Bidirectional typ') []))) = do
   t' <- balsaType typ'
   declare id' $ D.Chan t'
---declareTopLevel (Var (Id id') typ e) = case e of
---  Zero -> do
---    t <- balsaType typ
---    declare id' $ D.Var t Nothing
---  _  -> do
---    t <- balsaType typ
---    e' <- typedExpr' t e
---    declare id' $ D.Var t (Just e')
+declareTopLevel (Var (Id id') typ e) = do
+  t <- balsaType typ
+  case e of
+    Zero -> do
+      declare id' $ D.Var t Nothing
+    _  -> do
+      e' <- simpleExpression $ exprExp e
+      declare id' $ D.Var t (Just e')
 declareTopLevel (Type (Id id') typ) = do
   t <- typeDecl typ
   declare id' t
@@ -187,7 +222,7 @@ seqCmd ss = collapsePars <$> traverse parCmd ss
 
 
 caseCmds :: [Case Expr]
-           -> Cont PT.Cmd ([PT.CaseCmdGuard], PT.Cmd)
+           -> Cont ([PT.CaseCmdGuard], PT.Cmd) ExprCmd
 caseCmds cs = (,) <$> explicits <*> lift def
   where
     isDefault (Default _) = True
@@ -249,11 +284,11 @@ collapsePars = go
 
 cmd :: Statement -> TranslateM PT.Cmd
 cmd (Go p) = runSideEffects $ exprExp p
-cmd (Simple s) = simpleExp s
+cmd (Simple s) = getCmd <$> simpleExp s
 cmd (StmtBlock block) = blockCmd block
 -- for { } construct is identical to loop ... end
 cmd (ForWhile Nothing block) = PT.LoopCmd pos <$> blockCmd block
-cmd (ForWhile (Just e) block) = toCmd $
+cmd (ForWhile (Just e) block) = runSideEffects $
   PT.WhileCmd pos PT.NoCmd <$> forceExp e <*> lift (blockCmd block)
 -- for i := <start>; i < <end>; i++ { } is equivalent to a range
 cmd f@(ForThree
@@ -285,12 +320,12 @@ cmd f@(ForThree
     lookupType Eval.Uint64 = Builtins.uint64
     lookupType Eval.GoInt = Builtins.int
     lookupType Eval.GoUint = Builtins.uint
-cmd (If (Cond Nothing (Just expr)) block s) = toCmd $
+cmd (If (Cond Nothing (Just expr)) block s) = runSideEffects $
   PT.CaseCmdE pos <$> forceExp expr <*> lift (fmap return trueBlock) <*> lift s'
   where
     s' = maybe (return PT.NoCmd) cmd s
     trueBlock = PT.CaseCmdGuard pos [PT.ExprCaseMatch pos (PT.ValueExpr pos bool true)] <$> blockCmd block
-cmd (Switch (Cond Nothing (Just expr)) cases) = toCmd $ do
+cmd (Switch (Cond Nothing (Just expr)) cases) = runSideEffects $ do
   (cs, def) <- caseCmds cases
   PT.CaseCmdE pos <$> forceExp expr <*> pure cs <*> pure def
 cmd (StmtDecl decl) = do
@@ -305,12 +340,8 @@ cmd (StmtSelect cases) = PT.SelectCmd pos False <$> traverse chanCase cases
     chanCase d@(Default _) = unsupported "select" d
 cmd s = unsupported "statment" s
 
-type Cont r a = ContT r TranslateM a
-type ExprT m r = ContT r m (Maybe PT.Expr)
-type ExprFT m r = ContT r m PT.Expr
-
-runExprT :: ExprT m r -> (Maybe PT.Expr -> m r) -> m r
-runExprT = runContT
+type ExprT r = Cont (Maybe PT.Expr) r
+type ExprFT r = Cont PT.Expr r
 
 andThen :: PT.Cmd -> PT.Cmd -> PT.Cmd
 a `andThen` (PT.SeqCmd p cmds) = PT.SeqCmd p (a : cmds)
@@ -323,10 +354,10 @@ a `andThen` b = PT.SeqCmd pos [a,b]
          f (g (a -> b)) -> f (g a) -> f (g b)
 a <**> b = getCompose $ Compose a <*> Compose b
 
-mkExpr :: PT.Expr -> ExprT TranslateM PT.Cmd
+mkExpr :: PT.Expr -> ExprT ExprCmd
 mkExpr = return . Just
 
-exprExp :: Expr -> ExprT TranslateM PT.Cmd
+exprExp :: Expr -> ExprT ExprCmd
 exprExp (Prim prim) = primExp prim
 exprExp (UnOp Plus e) = PT.BinExpr pos PT.NoType PT.BinAdd (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
 exprExp (UnOp Minus e) = PT.BinExpr pos PT.NoType PT.BinSub (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
@@ -336,14 +367,21 @@ exprExp (BinOp op e e') = do
   PT.BinExpr pos PT.NoType op' <$$> exprExp e <**> exprExp e'
 exprExp e = lift $ M.unsupported "expr" e
 
-forceExp :: Expr -> ExprFT TranslateM PT.Cmd
+forceExp :: Expr -> ExprFT ExprCmd
 forceExp e = do
   a <- exprExp e
   case a of
     Nothing -> lift $ M.unsupported "expr" e
     Just a' -> return a'
 
-primExp :: Prim -> ExprT TranslateM PT.Cmd
+mapCmd :: (PT.Cmd -> PT.Cmd) -> ExprCmd -> ExprCmd
+mapCmd f (ExprCmd mc e) = ExprCmd (Just (f (fromMaybe PT.NoCmd mc))) e
+
+alterCmd :: (PT.Cmd -> PT.Cmd)
+           -> Cont a ExprCmd -> Cont a ExprCmd
+alterCmd f = mapContT (fmap (mapCmd f))
+
+primExp :: Prim -> ExprT ExprCmd
 primExp (LitInt i) = mkExpr $ PT.ValueExpr pos byte (PT.IntValue i)
 primExp (LitStr s) = mkExpr $ PT.ValueExpr pos string (PT.StringValue (unpack s))
 primExp (Qual (Just struct) id) = mkExpr $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id)
@@ -362,7 +400,7 @@ primExp (LitFunc sig block) = do
     declareTopLevel $ Func (Id id') sig block
     c' <- D.declContext <$> M.popContext
     return (c', id')
-  mapContT (PT.BlockCmd pos c <$>) (mkExpr $ PT.NameExpr pos (unpack i))
+  alterCmd (PT.BlockCmd pos c) (mkExpr $ PT.NameExpr pos (unpack i))
 primExp (Call p es me) = do
   callable <- primExp p
   case callable of
@@ -370,7 +408,7 @@ primExp (Call p es me) = do
       exprs <- mapM forceExp es
       let
         call = PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map PT.ExprProcActual exprs
-      mapContT (fmap (call `andThen`)) (return Nothing)
+      alterCmd (call `andThen`) (return Nothing)
     _ -> lift $ M.unsupported "callable" callable
 primExp s@(Slice p me (Just end)) = slice
   where
@@ -381,8 +419,8 @@ primExp (Index p e) = PT.IndexExpr pos <$$> primExp p <**> exprExp e
 primExp (Paren e) = exprExp e
 primExp s = lift $ M.unsupported  "primitive" s
 
-simpleExp :: Simp -> TranslateM PT.Cmd
-simpleExp Empty = return PT.NoCmd
+simpleExp :: Simp -> TranslateM ExprCmd
+simpleExp Empty = return $ ExprCmd Nothing Nothing
 simpleExp (Inc e) = simpleExp $ Assign e $ BinOp Operators.Add e (Prim (LitInt 1))
 simpleExp (Dec e) = simpleExp $ Assign e $ BinOp Operators.Subtract e (Prim (LitInt 1))
 simpleExp (Send chan e) = runContT ma return
@@ -390,7 +428,9 @@ simpleExp (Send chan e) = runContT ma return
     ma = do
       chan <- exprExp chan
       case chan of
-        (Just (PT.NameExpr p id)) -> PT.OutputCmd pos (PT.NameChan pos id) <$> forceExp e
+        (Just (PT.NameExpr p id)) -> do
+          c <- PT.OutputCmd pos (PT.NameChan pos id) <$> forceExp e
+          return $ ExprCmd (Just c) Nothing
         _ -> lift $ unsupported "chan expression" chan
 --simpleExp (SimpVar (Id id') (UnOp Receive (Prim (Qual Nothing (Id chan))))) = do
 --  chan' <- M.lookup chan
@@ -405,20 +445,16 @@ simpleExp (Send chan e) = runContT ma return
 --      receiveType (D.In t) = return t
 --      receiveType (D.Chan t) = return t
 --      receiveType s = M.typeError "chan or <-chan" (show s)
-simpleExp (SimpleExpr e) = runSideEffects (exprExp e)
+simpleExp (SimpleExpr e) = runExprCmd (exprExp e) id
 simpleExp s = unsupported "simple expression " s
 
-toCmd = flip runContT return
-
-runSideEffects :: ExprT TranslateM PT.Cmd -> TranslateM PT.Cmd
-runSideEffects = flip runContT (const $ return PT.NoCmd)
 
 data Args = Args [Expr] (Maybe Expr)
 
-print :: S.Args -> TranslateM PT.Cmd
-print (S.Args es (Just e)) = toCmd $ do
-  args <- mapM forceExp (es ++ [e])
-  return $ PT.PrintCmd pos args
-print (S.Args es Nothing) = toCmd $ do
-  args <- mapM forceExp es
-  return $ PT.PrintCmd pos args
+--print :: S.Args -> TranslateM PT.Cmd
+--print (S.Args es (Just e)) = runSideEffects $ do
+--  args <- mapM forceExp (es ++ [e])
+--  return $ PT.PrintCmd pos args
+--print (S.Args es Nothing) = runSideEffects $ do
+--  args <- mapM forceExp es
+--  return $ PT.PrintCmd pos args
