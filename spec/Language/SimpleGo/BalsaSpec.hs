@@ -10,6 +10,7 @@ import qualified Language.SimpleGo.Balsa.Builtins     as B
 import qualified Language.SimpleGo.Balsa.Declarations as D
 import qualified ParseTree                            as PT
 
+import           Data.Either                          (isLeft)
 import           Test.Hspec
 
 runExpr p = B.runTranslateT $ B.runExprT (B.primExp p) f
@@ -30,9 +31,14 @@ spec = do
     it "should handle the integer literal" $ do
       t <- runExpr $ S.LitInt 1
       t `shouldBe` (Right $ PT.SinkCmd D.pos (PT.ValueExpr B.pos B.byte (PT.IntValue 1)))
+
     it "should handle a call" $ do
       t <- runExpr $ S.Call (S.Qual Nothing (S.Id "test")) [] Nothing
       t `shouldBe` (Right $ PT.SeqCmd D.pos [PT.CallCmd D.pos (PT.NameCallable D.pos "test") C.EmptyContext [], PT.NoCmd])
+
+    it "should error on a type failure" $ do
+      t <- runExpr $ S.Call (S.Qual Nothing (S.Id "print")) [(S.Prim (S.Call (S.Qual Nothing (S.Id "test")) [] Nothing))] Nothing
+      t `shouldSatisfy` isLeft
 
   describe "simpleExp" $ do
     it "should handle a send" $ do

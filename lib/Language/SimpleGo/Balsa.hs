@@ -407,11 +407,11 @@ exprExp (BinOp op e e') = do
   PT.BinExpr pos PT.NoType op' <$$> exprExp e <**> exprExp e'
 exprExp e = lift $ M.unsupported "expr" e
 
-forceExp :: ExprT TranslateM r -> ExprFT TranslateM r
-forceExp ma = do
-  a <- ma
+forceExp :: Expr -> ExprFT TranslateM PT.Cmd
+forceExp e = do
+  a <- exprExp e
   case a of
-    Nothing -> lift $ M.unsupported "expr" "Nothing expr"
+    Nothing -> lift $ M.unsupported "expr" e
     Just a' -> return a'
 
 primExp :: Prim -> ExprT TranslateM PT.Cmd
@@ -438,7 +438,7 @@ primExp (Call p es me) = do
   callable <- primExp p
   case callable of
     (Just (PT.NameExpr _ id')) -> do
-      exprs <- mapM (forceExp . exprExp) es
+      exprs <- mapM forceExp es
       let
         call = PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map PT.ExprProcActual exprs
       mapContT (fmap (call `andThen`)) (return Nothing)
@@ -461,7 +461,7 @@ simpleExp (Send chan e) = runContT ma return
     ma = do
       chan <- exprExp chan
       case chan of
-        (Just (PT.NameExpr p id)) -> PT.OutputCmd pos (PT.NameChan pos id) <$> forceExp (exprExp e)
+        (Just (PT.NameExpr p id)) -> PT.OutputCmd pos (PT.NameChan pos id) <$> forceExp e
         _ -> lift $ unsupported "chan expression" chan
 --simpleExp (SimpVar (Id id') (UnOp Receive (Prim (Qual Nothing (Id chan))))) = do
 --  chan' <- M.lookup chan
