@@ -20,8 +20,8 @@ import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
-import           Control.Monad.Trans.Cont             (ContT (..), callCC,
-                                                       mapContT, runContT)
+import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
+                                                       runContT)
 import           Language.Helpers                     (bind, eval, finish, teak,
                                                        writeGates, writeTeak)
 import           Language.SimpleGo.AST
@@ -63,7 +63,7 @@ runSideEffects ma = getCmd <$> runExprCmd ma (const Nothing)
 simpleExpression :: Cont (Maybe PT.Expr) ExprCmd -> TranslateM PT.Expr
 simpleExpression ma = runExprCmd ma id >>= extract
   where
-    extract e@(ExprCmd (Just c) _) = M.unsupported "expression requires commands to be run" e
+    extract e@(ExprCmd (Just _) _) = M.unsupported "expression requires commands to be run" e
     extract (ExprCmd _ (Just e)) = return e
     extract e = M.unsupported "ExprCmd" e
 
@@ -139,7 +139,7 @@ declareTopLevel (Const (Id id') typ e) = do
   e' <- simpleExpression $ exprExp e
   declare id' $ D.Const e'
 -- err, this should be type checked, but need to refactor decls
-declareTopLevel (Var i typ' (Prim f@(LitFunc sig' block))) = declareTopLevel (Func i sig' block)
+declareTopLevel (Var i typ' (Prim (LitFunc sig' block))) = declareTopLevel (Func i sig' block)
 declareTopLevel (Var (Id id') _ (Prim (Make (Channel Bidirectional typ') []))) = do
   t' <- balsaType typ'
   declare id' $ D.Chan t'
@@ -153,19 +153,15 @@ declareTopLevel (Var (Id id') typ e) = do
 declareTopLevel (Type (Id id') typ) = do
   t <- typeDecl typ
   declare id' t
-declareTopLevel f@(Func (Id id') sig block) = declare id' =<< decl
-  where
+declareTopLevel (Func (Id id') sig block) = declare id' =<< mkProcedure sig block
 
-    decl = if isProc sig
-           then procedure
-           else M.unsupported "function" f
-    isProc (Signature i o) = True
-    procedure = do
-      M.newContext
-      declareSig sig
-      b <- blockCmd block
-      sigDecl' <- M.popContext
-      return $ D.Proc (D.declContext sigDecl') b
+mkProcedure :: Signature -> Block -> TranslateM Decl
+mkProcedure sig block = do
+  M.newContext
+  declareSig sig
+  b <- blockCmd block
+  sigDecl' <- M.popContext
+  return $ D.Proc (D.declContext sigDecl') b
 
 true :: PT.Value
 true = PT.IntValue 1
@@ -382,7 +378,7 @@ alterCmd f = mapContT (fmap (mapCmd f))
 primExp :: Prim -> ExprT ExprCmd
 primExp (LitInt i) = mkExpr $ PT.ValueExpr pos byte (PT.IntValue i)
 primExp (LitStr s) = mkExpr $ PT.ValueExpr pos string (PT.StringValue (unpack s))
-primExp (Qual (Just struct) id) = mkExpr $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id)
+primExp (Qual (Just struct) id') = mkExpr $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id')
 primExp (Qual Nothing id') = mkExpr $ PT.NameExpr pos (unId id')
 --primExp c@(Call (Qual Nothing (Id "append")) [arg] (Just f)) = callCC $ PT.AppendExpr pos PT.NoType <$> toExpr arg <*> toExpr f
 ---- special case type coercions and builtins
@@ -408,7 +404,7 @@ primExp (Call p es me) = do
         call = PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map PT.ExprProcActual exprs
       alterCmd (call `andThen`) (return Nothing)
     _ -> lift $ M.unsupported "callable" callable
-primExp s@(Slice p me (Just end)) = slice
+primExp (Slice p me (Just end)) = slice
   where
     slice = PT.SliceExpr pos <$$> primExp p <**> exprExp start <**> exprExp end
     start = fromMaybe (Prim (LitInt 0)) me
@@ -424,10 +420,10 @@ simpleExp (Dec e) = simpleExp $ Assign e $ BinOp Operators.Subtract e (Prim (Lit
 simpleExp (Send chan e) = runContT ma return
   where
     ma = do
-      chan <- exprExp chan
-      case chan of
-        (Just (PT.NameExpr p id)) -> do
-          c <- PT.OutputCmd pos (PT.NameChan pos id) <$> forceExp e
+      chan' <- exprExp chan
+      case chan' of
+        (Just (PT.NameExpr _ id')) -> do
+          c <- PT.OutputCmd pos (PT.NameChan pos id') <$> forceExp e
           return $ ExprCmd (Just c) Nothing
         _ -> lift $ unsupported "chan expression" chan
 --simpleExp (SimpVar (Id id') (UnOp Receive (Prim (Qual Nothing (Id chan))))) = do
@@ -447,7 +443,7 @@ simpleExp (SimpleExpr e) = runExprCmd (exprExp e) id
 simpleExp s = unsupported "simple expression " s
 
 
-data Args = Args [Expr] (Maybe Expr)
+-- data Args = Args [Expr] (Maybe Expr)
 
 --print :: S.Args -> TranslateM PT.Cmd
 --print (S.Args es (Just e)) = runSideEffects $ do

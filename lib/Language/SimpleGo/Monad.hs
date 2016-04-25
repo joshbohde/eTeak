@@ -3,7 +3,7 @@
 
 module Language.SimpleGo.Monad (
   TranslateT, Msg(..),
-  runTranslateT, unsupported, declare, popContext, newContext, notDefined, lookup, typeError, fresh
+  runTranslateT, unsupported, declare, popContext, newContext, notDefined, lookup, typeError, fresh,
   ) where
 
 import           Control.Monad.Except  (ExceptT (..), runExceptT, throwError)
