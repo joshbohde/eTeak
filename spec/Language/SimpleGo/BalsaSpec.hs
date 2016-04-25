@@ -36,13 +36,13 @@ spec = do
       t `shouldBe` (Right $ B.ExprCmd (Just cmd) Nothing)
 
     it "should error on a type failure" $ do
-      t <- runExpr $ S.Call (S.Qual Nothing (S.Id "print")) [S.Prim (S.Call (S.Qual Nothing (S.Id "test")) [] Nothing)] Nothing
+      t <- runExpr $ S.Call (S.Qual Nothing (S.Id "print")) [S.Fix $ S.Prim (S.Call (S.Qual Nothing (S.Id "test")) [] Nothing)] Nothing
       t `shouldSatisfy` isLeft
 
 
   describe "simpleExp" $
     it "should handle a send" $ do
-      let s = S.Send (S.Prim (S.Qual Nothing (S.Id "foo"))) (S.Prim (S.Qual Nothing (S.Id "bar")))
+      let s = S.Send (S.Fix $ S.Prim (S.Qual Nothing (S.Id "foo"))) (S.Fix $ S.Prim (S.Qual Nothing (S.Id "bar")))
       t <- B.runTranslateT $ B.simpleExp s
       let
         c = PT.OutputCmd D.pos (PT.NameChan D.pos "foo") (PT.NameExpr D.pos "bar")

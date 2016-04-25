@@ -15,6 +15,7 @@ import           Control.Monad.Except                 (ExceptT (..), runExceptT,
                                                        withExceptT)
 import           Control.Monad.Trans                  (lift, liftIO)
 import           Data.Functor.Compose                 (Compose (..))
+import           Data.Functor.Identity                (Identity (..))
 import           Data.Maybe                           (fromMaybe)
 import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
@@ -106,47 +107,47 @@ synthesizeFile f = do
       writeTeak (f ++ ".teak") teak'
       writeGates f teak'
 
-asBalsa :: Program -> TranslateM Context
+asBalsa :: Program' -> TranslateM Context
 asBalsa program = do
   -- Implementation bug: "String" must be defined
   declare "String" $ D.alias string
   root' program
   D.declContext <$> M.popContext
 
-root' :: Program -> TranslateM ()
+root' :: Program' -> TranslateM ()
 root' program = do
   forM_ Builtins.types $ \(n,t) -> declare (pack n) $ D.alias t
   forM_ (declarations program) declareTopLevel
 
 
-balsaType :: Type -> TranslateM PT.Type
+balsaType :: Type' -> TranslateM PT.Type
 balsaType (TypeName id') = return $ PT.NameType pos (unId id')
 balsaType (SliceType typ) = PT.ArrayType (PT.Interval (0,0) bool) <$> balsaType typ
 balsaType (FunctionType _) = return PT.NoType
 balsaType t = M.unsupported "type" t
 
-typeDecl :: Type -> TranslateM D.Decl
+typeDecl :: Type' -> TranslateM D.Decl
 typeDecl t@(TypeName _) = D.alias <$> balsaType t
 typeDecl (Struct fields) = D.Type <$> record
   where
     record = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
-    fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
+    fieldDecl :: (Id, Type') -> TranslateM PT.RecordElem
     fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> balsaType typ
 typeDecl t = unsupported "type declaration" t
 
-declareTopLevel :: Declaration -> TranslateM ()
+declareTopLevel :: Declaration' -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
   e' <- simpleExpression $ exprExp e
   declare id' $ D.Const e'
 -- err, this should be type checked, but need to refactor decls
-declareTopLevel (Var i typ' (Prim (LitFunc sig' block))) = declareTopLevel (Func i sig' block)
-declareTopLevel (Var (Id id') _ (Prim (Make (Channel Bidirectional typ') []))) = do
+declareTopLevel (Var i typ' (Fix (Prim (LitFunc sig' block)))) = declareTopLevel (Func i sig' block)
+declareTopLevel (Var (Id id') _ (Fix (Prim (Make (Channel Bidirectional typ') [])))) = do
   t' <- balsaType typ'
   declare id' $ D.Chan t'
 declareTopLevel (Var (Id id') typ e) = do
   t <- balsaType typ
   case e of
-    Zero -> declare id' $ D.Var t Nothing
+    (Fix Zero) -> declare id' $ D.Var t Nothing
     _  -> do
       e' <- simpleExpression $ exprExp e
       declare id' $ D.Var t (Just e')
@@ -155,7 +156,7 @@ declareTopLevel (Type (Id id') typ) = do
   declare id' t
 declareTopLevel (Func (Id id') sig block) = declare id' =<< mkProcedure sig block
 
-mkProcedure :: Signature -> Block -> TranslateM Decl
+mkProcedure :: Signature' -> Block' -> TranslateM Decl
 mkProcedure sig block = do
   M.newContext
   declareSig sig
@@ -186,14 +187,14 @@ binOp o = M.unsupported "operator" o
 unId :: Id -> String
 unId (Id id') = unpack id'
 
-sigDecl :: Type -> TranslateM D.Decl
+sigDecl :: Type' -> TranslateM D.Decl
 sigDecl (Channel Input typ) = D.In <$> balsaType typ
 sigDecl (Channel Output typ) = D.Out <$> balsaType typ
 --sigDecl (Channel Bidirectional typ) = PT.ChanDecl pos <$> balsaType typ
 sigDecl t@(TypeName _) = D.Param <$> balsaType t
 sigDecl t = unsupported "signature type" t
 
-declareParam :: Param -> TranslateM ()
+declareParam :: Param' -> TranslateM ()
 declareParam (Param (Just (Id id')) t) = do
   t' <- sigDecl t
   declare id' t'
@@ -201,21 +202,21 @@ declareParam (Param Nothing t) = do
   t' <- sigDecl t
   declare "_" t'
 
-declareSig :: Signature -> TranslateM ()
+declareSig :: Signature' -> TranslateM ()
 declareSig (Signature inputs _) = U.forM_ inputs declareParam
 
-blockCmd :: Block -> TranslateM PT.Cmd
+blockCmd :: Block' -> TranslateM PT.Cmd
 blockCmd (Block statements) = do
   M.newContext
   cmd' <- seqCmd $ U.toList statements
   c <- D.declContext <$> M.popContext
   return $ PT.BlockCmd pos c cmd'
 
-seqCmd :: [Statement] -> TranslateM PT.Cmd
+seqCmd :: [Statement'] -> TranslateM PT.Cmd
 seqCmd ss = collapsePars <$> traverse parCmd ss
 
 
-caseCmds :: [Case Expr]
+caseCmds :: [Case' Identity]
            -> Cont ([PT.CaseCmdGuard], PT.Cmd) ExprCmd
 caseCmds cs = (,) <$> explicits <*> lift def
   where
@@ -226,7 +227,7 @@ caseCmds cs = (,) <$> explicits <*> lift def
       (Default ss : _ ) -> seqCmd ss
       _ -> error "refactor `caseCmds` to be total"
     explicits = mapM cmdGuard $ filter (not . isDefault) cs
-    cmdGuard (Case es ss) = PT.CaseCmdGuard pos <$> mapM match es <*> lift (seqCmd ss)
+    cmdGuard (Case es ss) = PT.CaseCmdGuard pos <$> mapM (match . runIdentity) es <*> lift (seqCmd ss)
     cmdGuard _ = error "refactor `caseCmds` to be total"
     match e = PT.ExprCaseMatch pos <$> forceExp e
 
@@ -235,7 +236,7 @@ caseCmds cs = (,) <$> explicits <*> lift def
 
 data Par a = Par a | Seq a
 
-parCmd :: Statement -> TranslateM (Par PT.Cmd)
+parCmd :: Statement' -> TranslateM (Par PT.Cmd)
 parCmd c@(Go _) = Par <$> cmd c
 parCmd c = Seq <$> cmd c
 
@@ -276,7 +277,7 @@ collapsePars = go
         s = PT.SeqCmd pos $ justCmds (c:(map undo ss ++ [p]))
         p = collapsePars ps
 
-cmd :: Statement -> TranslateM PT.Cmd
+cmd :: Statement' -> TranslateM PT.Cmd
 cmd (Go p) = runSideEffects $ exprExp p
 cmd (Simple s) = getCmd <$> simpleExp s
 cmd (StmtBlock block) = blockCmd block
@@ -287,8 +288,8 @@ cmd (ForWhile (Just e) block) = runSideEffects $
 -- for i := <start>; i < <end>; i++ { } is equivalent to a range
 cmd f@(ForThree
        (SimpVar id' start)
-       (Just (BinOp LessThan (Prim (Qual Nothing id'')) end))
-       (Inc (Prim (Qual Nothing id''')))
+       (Just (Fix (BinOp LessThan (Fix (Prim (Qual Nothing id''))) end)))
+       (Inc (Fix (Prim (Qual Nothing id'''))))
        block)
   | id' == id'' && id' == id''' = b interval
   where
@@ -329,7 +330,7 @@ cmd (StmtSelect cases) = PT.SelectCmd pos False <$> traverse chanCase cases
   where
     chanCase (Case as stmnts) = PT.ChanGuard pos <$> traverse chanGuard as <*> pure C.EmptyContext <*> seqCmd stmnts
       where
-        chanGuard (ChanRecv Nothing (UnOp Receive (Prim (Qual Nothing id')))) = return $ PT.NameChan pos (unId id')
+        chanGuard (ChanRecv Nothing (Fix (UnOp Receive (Fix (Prim (Qual Nothing id')))))) = return $ PT.NameChan pos (unId id')
         chanGuard c = unsupported "guard" c
     chanCase d@(Default _) = unsupported "select" d
 cmd s = unsupported "statment" s
@@ -351,17 +352,17 @@ a <**> b = getCompose $ Compose a <*> Compose b
 mkExpr :: PT.Expr -> ExprT ExprCmd
 mkExpr = return . Just
 
-exprExp :: Expr -> ExprT ExprCmd
-exprExp (Prim prim) = primExp prim
-exprExp (UnOp Plus e) = PT.BinExpr pos PT.NoType PT.BinAdd (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
-exprExp (UnOp Minus e) = PT.BinExpr pos PT.NoType PT.BinSub (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
-exprExp (UnOp Not e) = PT.UnExpr pos PT.NoType PT.UnNot <$$> exprExp e
-exprExp (BinOp op e e') = do
+exprExp :: Expr' -> ExprT ExprCmd
+exprExp (Fix (Prim prim)) = primExp prim
+exprExp (Fix (UnOp Plus e)) = PT.BinExpr pos PT.NoType PT.BinAdd (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
+exprExp (Fix (UnOp Minus e)) = PT.BinExpr pos PT.NoType PT.BinSub (PT.ValueExpr pos PT.NoType (PT.IntValue 0)) <$$> exprExp e
+exprExp (Fix (UnOp Not e)) = PT.UnExpr pos PT.NoType PT.UnNot <$$> exprExp e
+exprExp (Fix (BinOp op e e')) = do
   op' <- lift (binOp op)
   PT.BinExpr pos PT.NoType op' <$$> exprExp e <**> exprExp e'
 exprExp e = lift $ M.unsupported "expr" e
 
-forceExp :: Expr -> ExprFT ExprCmd
+forceExp :: Expr' -> ExprFT ExprCmd
 forceExp e = do
   a <- exprExp e
   case a of
@@ -375,7 +376,7 @@ alterCmd :: (PT.Cmd -> PT.Cmd)
            -> Cont a ExprCmd -> Cont a ExprCmd
 alterCmd f = mapContT (fmap (mapCmd f))
 
-primExp :: Prim -> ExprT ExprCmd
+primExp :: Prim' -> ExprT ExprCmd
 primExp (LitInt i) = mkExpr $ PT.ValueExpr pos byte (PT.IntValue i)
 primExp (LitStr s) = mkExpr $ PT.ValueExpr pos string (PT.StringValue (unpack s))
 primExp (Qual (Just struct) id') = mkExpr $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id')
@@ -407,16 +408,16 @@ primExp (Call p es me) = do
 primExp (Slice p me (Just end)) = slice
   where
     slice = PT.SliceExpr pos <$$> primExp p <**> exprExp start <**> exprExp end
-    start = fromMaybe (Prim (LitInt 0)) me
+    start = fromMaybe (Fix (Prim (LitInt 0))) me
 primExp s@(Slice _ _ Nothing) = lift $ M.unsupported "slice expression with no end" s
 primExp (Index p e) = PT.IndexExpr pos <$$> primExp p <**> exprExp e
 primExp (Paren e) = exprExp e
 primExp s = lift $ M.unsupported  "primitive" s
 
-simpleExp :: Simp -> TranslateM ExprCmd
+simpleExp :: Simp' -> TranslateM ExprCmd
 simpleExp Empty = return $ ExprCmd Nothing Nothing
-simpleExp (Inc e) = simpleExp $ Assign e $ BinOp Operators.Add e (Prim (LitInt 1))
-simpleExp (Dec e) = simpleExp $ Assign e $ BinOp Operators.Subtract e (Prim (LitInt 1))
+simpleExp (Inc e) = simpleExp $ Assign e $ Fix $ BinOp Operators.Add e (Fix (Prim (LitInt 1)))
+simpleExp (Dec e) = simpleExp $ Assign e $ Fix $ BinOp Operators.Subtract e (Fix (Prim (LitInt 1)))
 simpleExp (Send chan e) = runContT ma return
   where
     ma = do

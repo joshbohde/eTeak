@@ -32,12 +32,12 @@ data Result = IntegralR !IntegralType !Integer
             | StringR !T.Text
 
 
-eval :: Expr -> Maybe Result
-eval (Prim p) = evalPrim p
-eval Zero = Nothing
+eval :: Expr' -> Maybe Result
+eval (Fix (Prim p)) = evalPrim p
+eval (Fix Zero) = Nothing
 eval _ = Nothing
 
-evalPrim :: Prim -> Maybe Result
+evalPrim :: Prim' -> Maybe Result
 evalPrim (LitInt i) = return $ IntegralR GoInt i
 evalPrim (LitReal f) = return $ FloatR GoFloat f
 evalPrim (LitChar c) = return $ CharR c

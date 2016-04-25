@@ -13,7 +13,7 @@ import qualified Language.SimpleGo.Helpers as Helpers
 import qualified Language.SimpleGo.Process as Process
 
 
-shouldParseDecl :: String -> [S.Declaration] -> Expectation
+shouldParseDecl :: String -> [S.Declaration'] -> Expectation
 source `shouldParseDecl` ds = do
   let processed = Helpers.parseDecl source >>= (runExcept . Process.compileDecl)
   processed `shouldBe` (Right $ U.fromList ds)
@@ -29,17 +29,17 @@ spec = do
     describe "const decls" $ do
       it "should compile a trivial single const" $
         "const a uint32 = 4" `shouldParseDecl` [
-          S.Const (S.Id "a") (S.TypeName (S.Id "uint32")) (S.Prim (S.LitInt 4))
+          S.Const (S.Id "a") (S.TypeName (S.Id "uint32")) (S.Fix (S.Prim (S.LitInt 4)))
           ]
       it "should substitute iota" $
         "const (a int = iota \n b int = iota)" `shouldParseDecl` [
-              S.Const (S.Id "a") (S.TypeName (S.Id "int")) (S.Prim (S.LitInt 0)),
-              S.Const (S.Id "b") (S.TypeName (S.Id "int")) (S.Prim (S.LitInt 1))
+              S.Const (S.Id "a") (S.TypeName (S.Id "int")) (S.Fix (S.Prim (S.LitInt 0))),
+              S.Const (S.Id "b") (S.TypeName (S.Id "int")) (S.Fix (S.Prim (S.LitInt 1)))
               ]
       it "should repeat the last expression" $
         "const (a int = iota \n b)" `shouldParseDecl` [
-              S.Const (S.Id "a") (S.TypeName (S.Id "int")) (S.Prim (S.LitInt 0)),
-              S.Const (S.Id "b") (S.TypeName (S.Id "int")) (S.Prim (S.LitInt 1))
+              S.Const (S.Id "a") (S.TypeName (S.Id "int")) (S.Fix (S.Prim (S.LitInt 0))),
+              S.Const (S.Id "b") (S.TypeName (S.Id "int")) (S.Fix (S.Prim (S.LitInt 1)))
               ]
 
     describe "type decls" $ do
