@@ -146,15 +146,13 @@ declareTopLevel (Var (Id id') _ (Prim (Make (Channel Bidirectional typ') []))) =
 declareTopLevel (Var (Id id') typ e) = do
   t <- balsaType typ
   case e of
-    Zero -> do
-      declare id' $ D.Var t Nothing
+    Zero -> declare id' $ D.Var t Nothing
     _  -> do
       e' <- simpleExpression $ exprExp e
       declare id' $ D.Var t (Just e')
 declareTopLevel (Type (Id id') typ) = do
   t <- typeDecl typ
   declare id' t
---declareTopLevel f = M.unsupported "top level binding" f
 declareTopLevel f@(Func (Id id') sig block) = declare id' =<< decl
   where
 
