@@ -82,9 +82,6 @@ module top;
 		`ifdef HAS_GO
 		.go_0r(go_r), .go_0a(go_a),
 		`endif
-		`ifdef HAS_DONE
-		.done_0r(done_r), .done_0a(done_a),
-		`endif
 		.reset(reset)
 	);
 endmodule
