@@ -26,8 +26,8 @@ spec = do
     let
       runExpr p = B.runTranslateT $ B.runExprCmd (B.primExp p) id
     it "should handle the integer literal" $ do
-      t <- runExpr $ S.LitInt 1
-      t `shouldBe` (Right $ B.ExprCmd Nothing (Just (PT.ValueExpr B.pos B.byte (PT.IntValue 1))))
+      (Right (B.ExprCmd _ (Just expr))) <- runExpr $ S.LitInt 1
+      B.balsaExpr expr `shouldBe` PT.ValueExpr B.pos B.byte (PT.IntValue 1)
 
     it "should handle a call" $ do
       t <- runExpr $ S.Call (S.Qual Nothing (S.Id "test")) [] Nothing

@@ -16,18 +16,19 @@ import qualified Data.Text as T
 import qualified Context   as C
 import qualified ParseTree as PT
 import qualified Report    as R
+import qualified Language.SimpleGo.AST as AST
 
 type Binding = C.Binding PT.Decl
 type Context = C.Context PT.Decl
 
 data Decl = Type PT.TypeBody
-          | Const PT.Expr
-          | Var PT.Type (Maybe PT.Expr)
-          | Chan PT.Type
+          | Const AST.Type PT.Expr
+          | Var AST.Type PT.Type (Maybe PT.Expr)
+          | Chan AST.Type PT.Type
           | Proc Context PT.Cmd
           -- For parameters
-          | In PT.Type
-          | Out PT.Type
+          | In AST.Type PT.Type
+          | Out AST.Type PT.Type
           | Param PT.Type
           deriving (Show, Eq)
 
@@ -53,14 +54,14 @@ declContext :: [(T.Text, Decl)] -> Context
 declContext decls = C.bindingsToContext1 $ zipWith binding [0..] decls
   where
     b (Type t) = (C.TypeNamespace, PT.TypeDecl pos t)
-    b (Const e) = (C.OtherNamespace, PT.ExprDecl pos e)
-    b (Var _ (Just e)) = (C.OtherNamespace, PT.ExprDecl pos e)
-    b (Var t Nothing) = (C.OtherNamespace, PT.VarDecl pos t)
-    b (Chan t) = (C.OtherNamespace, PT.ChanDecl pos t)
+    b (Const _ e) = (C.OtherNamespace, PT.ExprDecl pos e)
+    b (Var _ _ (Just e)) = (C.OtherNamespace, PT.ExprDecl pos e)
+    b (Var _ t Nothing) = (C.OtherNamespace, PT.VarDecl pos t)
+    b (Chan _ t) = (C.OtherNamespace, PT.ChanDecl pos t)
     b (Proc c cmd) = (C.ProcNamespace, PT.ProcDecl pos c [] cmd)
     -- For parameters
-    b (In t) = (C.OtherNamespace, PT.PortDecl pos PT.Input t)
-    b (Out t) = (C.OtherNamespace, PT.PortDecl pos PT.Output t)
+    b (In _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Input t)
+    b (Out _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Output t)
     b (Param t) = (C.OtherNamespace, PT.ParamDecl pos True t)
     binding i (n, a) = C.Binding i (T.unpack n) namespace R.Incomplete decl
       where
