@@ -51,20 +51,25 @@ type TranslateM = M.TranslateT IO Decl
 -- definitions setup for the literal, before the literal can be called.
 type Cont a b = ContT b TranslateM a
 
-runExprCmd :: Cont a ExprCmd -> (a -> Maybe TypedExpr) -> TranslateM ExprCmd
-runExprCmd ma f = runContT ma (return . ExprCmd Nothing . f)
-
 getCmd :: ExprCmd -> PT.Cmd
 getCmd (ExprCmd c _) = fromMaybe PT.NoCmd c
 
+runExprCmd :: Cont (Maybe TypedExpr) ExprCmd -> TranslateM ExprCmd
+runExprCmd ma = runContT ma (return . ExprCmd Nothing)
+
 -- If we don't need the expression, we can just throw it away.
-runSideEffects :: Cont a ExprCmd -> TranslateM PT.Cmd
-runSideEffects ma = getCmd <$> runExprCmd ma (const Nothing)
+runSideEffects :: Cont PT.Cmd ExprCmd -> TranslateM PT.Cmd
+runSideEffects ma = getCmd <$> runContT mb return
+  where
+    mb = do
+      c <- ma
+      return $ ExprCmd (Just c) Nothing
 
 -- Error if we require a command, otherwise return the expression
 simpleExpression :: Cont (Maybe TypedExpr) ExprCmd -> TranslateM TypedExpr
-simpleExpression ma = runExprCmd ma id >>= extract
+simpleExpression ma = runExprCmd ma >>= extract
   where
+
     extract e@(ExprCmd (Just _) _) = M.unsupported "expression requires commands to be run" e
     extract (ExprCmd _ (Just e)) = return e
     extract e = M.unsupported "ExprCmd" e
@@ -164,7 +169,12 @@ typeDecl t = unsupported "type declaration" t
 
 typeCheck :: Type -> Maybe (Explicitness, Type) -> TranslateM ()
 typeCheck _ Nothing = return ()
-typeChecm a (Just (_, b)) = when (a /= b) $ M.typeError (show a) (show b)
+typeCheck (TypeName (Id "byte")) (Just (_, (TypeName (Id "uint8")))) = return ()
+typeCheck (TypeName a) t@(Just (Implicit, (TypeName b))) = when (a /= b && (not isNum)) $ M.typeError (show a) (show t)
+  where
+    integrals = map Id ["byte", "int", "uint", "uint8"]
+    isNum = a `elem ` integrals && b == (Id "int")
+typeCheck a t@(Just (_, b)) = when (a /= b) $ M.typeError (show a) (show t)
 
 declareTopLevel :: Declaration -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
@@ -195,7 +205,7 @@ mkProcedure sig block = do
   declareSig sig
   b <- blockCmd block
   sigDecl' <- M.popContext
-  return $ D.Proc (D.declContext sigDecl') b
+  return $ D.Proc (FunctionType sig) (D.declContext sigDecl') b
 
 true :: PT.Value
 true = PT.IntValue 1
@@ -224,7 +234,7 @@ sigDecl :: Type -> TranslateM D.Decl
 sigDecl (Channel Input typ) = D.In typ <$> balsaType typ
 sigDecl (Channel Output typ) = D.Out typ <$> balsaType typ
 --sigDecl (Channel Bidirectional typ) = PT.ChanDecl pos <$> balsaType typ
-sigDecl t@(TypeName _) = D.Param <$> balsaType t
+sigDecl t@(TypeName _) = D.Param t <$> balsaType t
 sigDecl t = unsupported "signature type" t
 
 declareParam :: Param -> TranslateM ()
@@ -309,7 +319,7 @@ collapsePars = go
         p = collapsePars ps
 
 cmd :: Statement -> TranslateM PT.Cmd
-cmd (Go p) = runSideEffects $ exprExp p
+cmd (Go p) = getCmd <$> runExprCmd (exprExp p)
 cmd (Simple s) = getCmd <$> simpleExp s
 cmd (StmtBlock block) = blockCmd block
 -- for { } construct is identical to loop ... end
@@ -324,18 +334,31 @@ cmd f@(ForThree
        block)
   | id' == id'' && id' == id''' = b interval
   where
-    b (Just i@(PT.Interval _ typ')) = do
+    b (Just (goType, i@(PT.Interval _ typ'))) = do
        M.newContext
-       declare (idText id') (D.Param typ')
+       declare (idText id') (D.Param goType typ')
+       cmd' <- blockCmd block
        c <- D.declContext <$> M.popContext
-       PT.ForCmd pos PT.Seq i c <$> blockCmd block
+       return $ PT.ForCmd pos PT.Seq i c cmd'
     b _ = unsupported "ForLoop" f
     interval = do
       (start', end') <- (,) <$> Eval.eval start <*> Eval.eval end
       case (start', end') of
         (Eval.IntegralR t s, Eval.IntegralR _ e) ->
-          return $ PT.Interval (s, pred e) $ lookupType t
+          return $ (TypeName (Id (goType t)), PT.Interval (s, pred e) $ lookupType t)
         _ -> Nothing
+
+    goType Eval.Int8 = "int8"
+    goType Eval.Int16 = "int16"
+    goType Eval.Int32 = "int32"
+    goType Eval.Int64 = "int64"
+    goType Eval.Uint8 = "uint8"
+    goType Eval.Uint16 = "uint16"
+    goType Eval.Uint32 = "uint32"
+    goType Eval.Uint64 = "uint64"
+    goType Eval.GoInt = "int"
+    goType Eval.GoUint = "uint"
+
     lookupType Eval.Int8 = Builtins.int8
     lookupType Eval.Int16 = Builtins.int16
     lookupType Eval.Int32 = Builtins.int32
@@ -383,6 +406,7 @@ a <**> b = getCompose $ Compose a <*> Compose b
 mkExpr :: TypedExpr -> ExprT ExprCmd
 mkExpr = return . Just
 
+unOpExpr :: Expr -> (PT.Type -> PT.Expr -> PT.Expr) -> ContT ExprCmd TranslateM (Maybe TypedExpr)
 unOpExpr e f = do
   mayExpr <- exprExp e
   case mayExpr of
@@ -459,8 +483,9 @@ primExp (Qual Nothing (Id id')) = do
       (Just (D.In t _)) -> return $ Channel Input t
       (Just (D.Out t _)) -> return $ Channel Output t
       (Just (D.Const t _)) -> return t
+      (Just (D.Param t _)) -> return t
+      (Just (D.Proc t _ _)) -> return t
       Nothing -> M.notDefined (unpack id')
-      c -> M.unsupported "qualified identifier" c
   mkExpr $ TypedExpr (explicit typ') $ PT.NameExpr pos (unpack id')
 primExp (LitFunc sig block) = do
   (c, i) <- lift $ do
@@ -504,6 +529,7 @@ simpleExp (Send chan e) = runContT ma return
   where
     checkSend (Channel Input _) _ = M.unsupported "sending on input channel" e
     checkSend (Channel _ t) t' = typeCheck t t'
+    checkSend t _ = M.unsupported "sending on non channel" t
     ma = do
       chan' <- exprExp chan
       case chan' of
@@ -514,21 +540,18 @@ simpleExp (Send chan e) = runContT ma return
             c = PT.OutputCmd pos (PT.NameChan pos id') e'
           return $ ExprCmd (Just c) Nothing
         _ -> lift $ unsupported "chan expression" chan
-
---simpleExp (SimpVar (Id id') (UnOp Receive (Prim (Qual Nothing (Id chan))))) = do
---  chan' <- M.lookup chan
---  case chan' of
---    Nothing -> M.notDefined (unpack chan)
---    Just t -> do
---      r <- receiveType t
---      declare id' (D.Var r Nothing)
---      return $ PT.InputCmd pos (PT.NameChan pos (unpack chan)) (PT.NameLvalue pos (unpack id'))
---    where
---      receiveType :: D.Decl -> TranslateM PT.Type
---      receiveType (D.In t) = return t
---      receiveType (D.Chan t) = return t
---      receiveType s = M.typeError "chan or <-chan" (show s)
-simpleExp (SimpleExpr e) = runExprCmd (exprExp e) id
+simpleExp s@(SimpVar (Id id') e) = runContT ma return
+  where
+    ma = do
+      (TypedExpr mayType ex) <- forceExp e
+      case mayType of
+        Just (_, t) -> do
+          lift $ do
+            btype <- balsaType t
+            declare id' $ D.Var t btype Nothing
+          return $ ExprCmd (Just $ PT.AssignCmd pos (PT.NameLvalue pos (unpack id')) ex) Nothing
+        Nothing -> lift $ unsupported "simple expression " s
+simpleExp (SimpleExpr e) = runExprCmd (exprExp e)
 simpleExp s = unsupported "simple expression " s
 
 

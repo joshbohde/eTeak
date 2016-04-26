@@ -24,7 +24,7 @@ spec = do
 
   describe "primExp" $ do
     let
-      runExpr p = B.runTranslateT $ B.runExprCmd (B.primExp p) id
+      runExpr p = B.runTranslateT $ B.runExprCmd (B.primExp p)
     it "should handle the integer literal" $ do
       (Right (B.ExprCmd _ (Just expr))) <- runExpr $ S.LitInt 1
       B.balsaExpr expr `shouldBe` PT.ValueExpr B.pos B.byte (PT.IntValue 1)
