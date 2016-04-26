@@ -42,8 +42,6 @@ module Language.SimpleGo.AST (
   ) where
 
 import           Data.Functor.Foldable           (Fix (..))
-import qualified Data.Text                       as T
-import qualified Data.Vector                     as U
 import qualified Language.SimpleGo.AST.Generic   as G
 import qualified Language.SimpleGo.AST.Operators as Operators
 
