@@ -7,7 +7,7 @@ module Language.SimpleGo.Types (
        UnTyped(..),
        primitives,
        assignableTo, convertibleTo,
-       canTypeAs,
+       canTypeAs, defaultType,
        translate
        ) where
 
@@ -87,6 +87,14 @@ canTypeAs DefaultInt = convertibleTo (Numeric GoInt)
 canTypeAs DefaultFloat64 = convertibleTo (Numeric Float64)
 canTypeAs DefaultComplex128 = convertibleTo (Complex Complex128)
 canTypeAs DefaultString = convertibleTo String
+
+defaultType :: UnTyped -> Type
+defaultType DefaultBool = Bool
+defaultType DefaultRune = builtinRune
+defaultType DefaultInt = Numeric GoInt
+defaultType DefaultFloat64 = Numeric Float64
+defaultType DefaultComplex128 = Complex Complex128
+defaultType DefaultString = String
 
 assignableTo :: Type -> Type -> Bool
 assignableTo (Named name1 t1) (Named name2 t2) = name1 == name2 && t1 == t2
