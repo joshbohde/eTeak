@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveFoldable    #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveTraversable #-}
 -- |
 
 module Language.SimpleGo.AST (
@@ -153,4 +156,4 @@ data Cond = Cond (Maybe Simp) (Maybe Expr)
 
 data Case a = Case [a] [Statement]
             | Default  [Statement]
-            deriving (Eq, Read, Show)
+            deriving (Eq, Read, Show, Functor, Foldable, Traversable)
