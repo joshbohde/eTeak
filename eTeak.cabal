@@ -107,6 +107,7 @@ library
                    Language.SimpleGo.Monad
                    Language.SimpleGo.Process
                    Language.SimpleGo.Transforms
+                   Language.SimpleGo.Types
                    Latch
                    Layout
                    Lexer
@@ -217,6 +218,7 @@ Test-Suite spec
   other-modules:  Language.SimpleGo.BalsaSpec
                   Language.SimpleGo.Helpers
                   Language.SimpleGo.ProcessSpec
+                  Language.SimpleGo.TypeSpec
 
   build-depends:  base >= 4.8 && < 5
                 , eTeak

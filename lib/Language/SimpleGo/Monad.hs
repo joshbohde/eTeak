@@ -1,12 +1,13 @@
+{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 -- |
 
 module Language.SimpleGo.Monad (
   TranslateT, Msg(..),
-  runTranslateT, unsupported, declare, popContext, newContext, notDefined, lookup, typeError, fresh,
+  runTranslateT, unsupported, declare, popContext, newContext, notDefined, lookup, lookup', typeError, fresh,
   ) where
 
-import           Control.Monad.Except  (ExceptT (..), runExceptT, throwError)
+import           Control.Monad.Except  (ExceptT (..), runExceptT, throwError, MonadError)
 import           Control.Monad.State   (StateT, evalStateT, gets, modify')
 import           Data.Monoid           ((<>))
 import qualified Data.Text             as T
@@ -45,7 +46,7 @@ unsupported construct a = throwError $ Unsupported $ "unsupported " ++ construct
 notDefined :: (Monad m) => String -> TranslateT m decl a
 notDefined id' = throwError $ Undefined id'
 
-typeError :: (Monad m) => String -> String -> TranslateT m decl a
+typeError :: MonadError Msg m => String -> String -> m a
 typeError expected actual = throwError $ TypeError expected actual
 
 declare :: (Monad m) => T.Text -> decl -> TranslateT m decl ()
@@ -62,6 +63,13 @@ lookup :: (Monad m) => T.Text -> TranslateT m decl (Maybe decl)
 lookup t = do
   env' <- gets env
   return $ Env.lookup env' t
+
+lookup' :: (Monad m) => T.Text -> TranslateT m decl decl
+lookup' t = do
+  i <- lookup t
+  case i of
+    Just a -> return a
+    Nothing -> notDefined (T.unpack t)
 
 popContext :: (Monad m) => TranslateT m decl [(T.Text, decl)]
 popContext = do
