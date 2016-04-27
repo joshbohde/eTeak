@@ -17,6 +17,8 @@ import qualified Language.Go.Syntax.AST       as Go
 import qualified Language.SimpleGo.AST        as S
 import qualified Language.SimpleGo.Transforms as Transforms
 
+
+
 compileFile :: String -> IO (Either String S.Program)
 compileFile f = do
   s <- readFile f
@@ -221,6 +223,7 @@ asSimple (Go.GoSimpDec e) = S.Dec <$> toExpr e
 --asSimple Go.GoSimpAsn [GoExpr] GoOp [GoExpr] =
 asSimple (Go.GoSimpVar [i] [e]) = S.SimpVar (asId i) <$> toExpr e
 asSimple (Go.GoSimpVar _ _) = throwError "Simple vars only accept a single id and expr"
+asSimple (Go.GoSimpAsn [e] (Go.GoOp "=") [e']) = S.Assign <$> toExpr e <*> toExpr e'
 asSimple s = throwError $ "unsupported simple expr" ++ show s
 
 forClause :: MonadError String m => Go.GoForClause -> S.Block -> m S.Statement
