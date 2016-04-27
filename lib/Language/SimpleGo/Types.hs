@@ -80,6 +80,9 @@ data UnTyped = DefaultBool
              | DefaultComplex128
              | DefaultString
 
+-- This isn't strictly right, but will work for now
+-- See https://golang.org/ref/spec#Constants for a full implementation
+-- We will need to check for overflows, etc here
 canTypeAs :: UnTyped -> Type -> Bool
 canTypeAs DefaultBool = convertibleTo Bool
 canTypeAs DefaultRune = convertibleTo builtinRune
