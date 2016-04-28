@@ -54,8 +54,6 @@ builtinRune = Named "rune" (Numeric Int32)
 
 primitives :: [(String, Type)]
 primitives = [
-  ("byte", builtinByte),
-  ("rune", builtinRune),
   ("int8", Numeric Int8),
   ("int16", Numeric Int16),
   ("int32", Numeric Int32),
@@ -70,7 +68,9 @@ primitives = [
   ("float32", Numeric Float32),
   ("float64", Numeric Float64),
   ("bool", Bool),
-  ("string", String)
+  ("string", String),
+  ("byte", builtinByte),
+  ("rune", builtinRune)
   ]
 
 
