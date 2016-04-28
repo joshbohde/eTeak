@@ -96,6 +96,7 @@ library
                    Graph
                    Gui
                    GuiSupport
+                   Data.OrderedMap
                    Language.Helpers
                    Language.SimpleGo.AST
                    Language.SimpleGo.AST.Name

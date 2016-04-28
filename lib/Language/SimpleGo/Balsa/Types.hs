@@ -9,7 +9,7 @@ module Language.SimpleGo.Balsa.Types (
   TypeNamespace(..),
   declareBuiltins,
   TypeM, runTypeM,
-  translate, (=?)
+  alias, translate, (=?)
   ) where
 
 import           Prelude                          hiding (lookup)
@@ -33,9 +33,11 @@ data TypeDeclaration = TypeDeclaration GoTypes.Type PT.TypeBody
 
 
 data TypeError = Unfound Name
+               | AlreadyDeclared Name
                | Incompatible GoTypes.Type GoTypes.Type
                | IncompatibleUntyped GoTypes.Type GoTypes.UnTyped
                | UnsupportedType AST.Type
+               deriving (Show, Eq)
 
 class (Monad m) => TypeNamespace m where
   lookup :: Name -> m TypeDeclaration
@@ -48,6 +50,12 @@ declareBuiltins = forM_ GoTypes.primitives $ \(n, t) ->
     case Prelude.lookup n BalsaBuiltins.types of
       (Just bt) -> declare (name n) $ TypeDeclaration t $ PT.AliasType R.NoPos bt
       Nothing -> return ()
+
+alias :: (TypeNamespace m) => AST.Id -> PT.Type -> m ()
+alias s@(AST.Id i) p = do
+  goType <- translate $ AST.TypeName s
+  declare (name i) $ TypeDeclaration goType $ PT.AliasType R.NoPos p
+
 
 translate :: (TypeNamespace m) => AST.Type -> m GoTypes.Type
 translate = go

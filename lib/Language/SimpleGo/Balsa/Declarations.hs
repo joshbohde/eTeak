@@ -1,29 +1,25 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- |
 
 module Language.SimpleGo.Balsa.Declarations (
   Binding, Context,
-  typeBinding,
-  buildBindings, buildContext,
-  Decl(..), declContext, alias, pos
+  Decl(..),
+  topLevelContext, subContext, pos
   ) where
 
-import           Control.Monad.Except (MonadError)
-import           Control.Monad (zipWithM)
-import qualified Data.Foldable as F
-import qualified Data.Text as T
+import qualified Data.Text                     as T
 
-import qualified Context   as C
-import qualified ParseTree as PT
-import qualified Report    as R
-import qualified Language.SimpleGo.AST as AST
-import qualified Language.SimpleGo.Types as Types
+import qualified Context                       as C
+import qualified Language.SimpleGo.AST         as AST
+import qualified Language.SimpleGo.Balsa.Types as Types
+import qualified ParseTree                     as PT
+import qualified Report                        as R
 
 type Binding = C.Binding PT.Decl
 type Context = C.Context PT.Decl
 
-data Decl = Type (Either Types.Type AST.Type) PT.TypeBody
-          | Const AST.Type PT.Expr
+data Decl = Const AST.Type PT.Expr
           | Var AST.Type PT.Type (Maybe PT.Expr)
           | Chan AST.Type PT.Type
           | Proc AST.Type Context PT.Cmd
@@ -33,37 +29,49 @@ data Decl = Type (Either Types.Type AST.Type) PT.TypeBody
           | Param AST.Type PT.Type
           deriving (Show, Eq)
 
-alias :: AST.Id -> PT.Type -> Decl
-alias s = Type (Right $ AST.TypeName s) . PT.AliasType pos
-
 pos :: R.Pos
 pos = R.NoPos
 
-typeBinding :: Int -> String -> PT.Type -> Binding
-typeBinding i name typ' = C.Binding i name C.TypeNamespace R.Incomplete $ PT.TypeDecl pos $ PT.AliasType pos typ'
+class HasPTDecl a where
+  mkDecl :: a -> (C.Namespace, PT.Decl)
 
+instance HasPTDecl Decl where
+  mkDecl (Const _ e) = (C.OtherNamespace, PT.ExprDecl pos e)
+  mkDecl (Var _ _ (Just e)) = (C.OtherNamespace, PT.ExprDecl pos e)
+  mkDecl (Var _ t Nothing) = (C.OtherNamespace, PT.VarDecl pos t)
+  mkDecl (Chan _ t) = (C.OtherNamespace, PT.ChanDecl pos t)
+  mkDecl (Proc _ c cmd) = (C.ProcNamespace, PT.ProcDecl pos c [] cmd)
+  -- For parameters
+  mkDecl (In _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Input t)
+  mkDecl (Out _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Output t)
+  mkDecl (Param _ t) = (C.OtherNamespace, PT.ParamDecl pos True t)
 
-buildBindings :: (MonadError String m, Foldable f) =>
-                (Int -> a -> m Binding) -> f a -> m [Binding]
-buildBindings mb as = zipWithM mb [0..] $ F.toList as
+instance HasPTDecl Types.TypeDeclaration where
+  mkDecl (Types.TypeDeclaration _ t) = (C.TypeNamespace, PT.TypeDecl pos t)
 
-buildContext :: (MonadError String m, Foldable f) =>
-              (Int -> a -> m Binding) -> f a -> m Context
-buildContext mb as = C.bindingsToContext1 <$> buildBindings mb as
+instance (HasPTDecl a, HasPTDecl b) => HasPTDecl (Either a b) where
+  mkDecl (Right a) = mkDecl a
+  mkDecl (Left a) = mkDecl a
 
-declContext :: [(T.Text, Decl)] -> Context
-declContext decls = C.bindingsToContext1 $ zipWith binding [0..] decls
+data Builtin = Builtin C.Namespace PT.Decl
+
+instance HasPTDecl Builtin where
+  mkDecl (Builtin n d) = (n, d)
+
+buildContext :: HasPTDecl a => [(T.Text, a)] -> Context
+buildContext decls = C.bindingsToContext1 $ zipWith binding [0..] decls
   where
-    b (Type _ t) = (C.TypeNamespace, PT.TypeDecl pos t)
-    b (Const _ e) = (C.OtherNamespace, PT.ExprDecl pos e)
-    b (Var _ _ (Just e)) = (C.OtherNamespace, PT.ExprDecl pos e)
-    b (Var _ t Nothing) = (C.OtherNamespace, PT.VarDecl pos t)
-    b (Chan _ t) = (C.OtherNamespace, PT.ChanDecl pos t)
-    b (Proc _ c cmd) = (C.ProcNamespace, PT.ProcDecl pos c [] cmd)
-    -- For parameters
-    b (In _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Input t)
-    b (Out _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Output t)
-    b (Param _ t) = (C.OtherNamespace, PT.ParamDecl pos True t)
     binding i (n, a) = C.Binding i (T.unpack n) namespace R.Incomplete decl
       where
-        (namespace, decl) = b a
+        (namespace, decl) = mkDecl a
+
+topLevelContext :: [(T.Text, Either Types.TypeDeclaration Decl)] -> Context
+topLevelContext decls = buildContext totalDecls
+  where
+    totalDecls = map (fmap Left) builtins ++ map (fmap Right) decls
+    builtins = [
+      ("String", Builtin C.TypeNamespace (PT.TypeDecl pos (PT.AliasType pos (PT.BuiltinType "String"))))
+      ]
+
+subContext :: [(T.Text, Decl)] -> Context
+subContext = buildContext

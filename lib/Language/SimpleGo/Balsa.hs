@@ -6,7 +6,6 @@
 
 module Language.SimpleGo.Balsa  (
   synthesizeFile,
-  typeDecl,
   TranslateM, M.runTranslateT, pos, primExp, simpleExp, runExprCmd, ExprCmd(..), TypedExpr(..)
   ) where
 
@@ -27,11 +26,14 @@ import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
 import           Language.Helpers                     (bind, eval, finish, teak,
                                                        writeGates, writeTeak)
 import           Language.SimpleGo.AST
+import           Language.SimpleGo.AST.Name           (name)
 import qualified Language.SimpleGo.AST.Operators      as Operators
 import           Language.SimpleGo.Balsa.Builtins     (bool, byte, string)
 import qualified Language.SimpleGo.Balsa.Builtins     as Builtins
 import           Language.SimpleGo.Balsa.Declarations (Context, Decl)
 import qualified Language.SimpleGo.Balsa.Declarations as D
+import           Language.SimpleGo.Balsa.Types        ((=?))
+import qualified Language.SimpleGo.Balsa.Types        as BT
 import qualified Language.SimpleGo.Eval               as Eval
 import           Language.SimpleGo.Monad              (declare, unsupported)
 import qualified Language.SimpleGo.Monad              as M
@@ -41,8 +43,6 @@ import qualified Language.SimpleGo.Types              as Types
 import qualified ParseTree                            as PT
 import           Print                                (showTree)
 import qualified Report                               as R
-
-typeCheck = undefined
 
 type TranslateM = M.TranslateT IO Decl
 
@@ -87,6 +87,9 @@ data TypedExpr = TypedExpr {
 explicit t = TypedExpr (Just (Right t))
 implicit u = TypedExpr (Just (Left u))
 
+a =?? Nothing = return ()
+a =?? (Just b) = a =? b
+
 -- A data type representing the commands necessary to run before the
 -- result of some expression is available. This is necessary because
 -- Go's Statements can sometimes be either a Balsa expression or statement, and
@@ -126,17 +129,12 @@ synthesizeFile f = do
 
 asBalsa :: Program -> TranslateM Context
 asBalsa program = do
-  -- Implementation bug: "String" must be defined
-  declare "String" $ D.alias (Id "string") string
   root' program
-  D.declContext <$> M.popContext
+  D.topLevelContext <$> M.topLevel
 
 root' :: Program -> TranslateM ()
 root' program = do
-  forM_ Types.primitives $ \(n, t) ->
-    case Prelude.lookup n Builtins.types of
-      (Just bt) -> declare (pack n) $ D.Type (Left t) $ PT.AliasType pos bt
-      Nothing -> return ()
+  BT.declareBuiltins
   forM_ (declarations program) declareTopLevel
 
 
@@ -146,19 +144,10 @@ balsaType (SliceType typ) = PT.ArrayType (PT.Interval (0,0) bool) <$> balsaType 
 balsaType (FunctionType _) = return PT.NoType
 balsaType t = M.unsupported "type" t
 
-typeDecl :: Type -> TranslateM D.Decl
-typeDecl t@(TypeName i) = D.alias i <$> balsaType t
-typeDecl t@(Struct fields) = D.Type (Right t) <$> record
-  where
-    record = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
-    fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
-    fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> balsaType typ
-typeDecl t = unsupported "type declaration" t
-
 declareTopLevel :: Declaration -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
   (TypedExpr typ' e') <- simpleExpression $ exprExp e
-  typeCheck typ typ'
+  typ =?? typ'
   declare id' $ D.Const typ e'
 -- err, this should be type checked, but need to refactor decls
 declareTopLevel (Var i _ (Prim (LitFunc sig' block))) = declareTopLevel (Func i sig' block)
@@ -171,11 +160,19 @@ declareTopLevel (Var (Id id') typ e) = do
     Zero -> declare id' $ D.Var typ t Nothing
     _  -> do
       (TypedExpr t' e') <- simpleExpression $ exprExp e
-      typeCheck typ t'
+      typ =?? t'
       declare id' $ D.Var typ t (Just e')
-declareTopLevel (Type (Id id') typ) = do
-  t <- typeDecl typ
-  declare id' t
+declareTopLevel (Type id' typ) = do
+  goType <- BT.translate typ
+  balsaType <- typeDecl typ
+  BT.declare (name (unId id')) $ BT.TypeDeclaration goType balsaType
+  where
+   typeDecl t@(TypeName i) = PT.AliasType pos <$> balsaType t
+   typeDecl t@(Struct fields) = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
+     where
+       fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
+       fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> balsaType typ
+   typeDecl t = unsupported "type declaration" t
 declareTopLevel (Func (Id id') sig block) = declare id' =<< mkProcedure sig block
 
 mkProcedure :: Signature -> Block -> TranslateM Decl
@@ -184,7 +181,7 @@ mkProcedure sig block = do
   declareSig sig
   b <- blockCmd block
   sigDecl' <- M.popContext
-  return $ D.Proc (FunctionType sig) (D.declContext sigDecl') b
+  return $ D.Proc (FunctionType sig) (D.subContext sigDecl') b
 
 true :: PT.Value
 true = PT.IntValue 1
@@ -231,7 +228,7 @@ blockCmd :: Block -> TranslateM PT.Cmd
 blockCmd (Block statements) = do
   M.newContext
   cmd' <- seqCmd $ U.toList statements
-  c <- D.declContext <$> M.popContext
+  c <- D.subContext <$> M.popContext
   return $ PT.BlockCmd pos c cmd'
 
 seqCmd :: [Statement] -> TranslateM PT.Cmd
@@ -317,7 +314,7 @@ cmd f@(ForThree
        M.newContext
        declare (idText id') (D.Param goType typ')
        cmd' <- blockCmd block
-       c <- D.declContext <$> M.popContext
+       c <- D.subContext <$> M.popContext
        return $ PT.ForCmd pos PT.Seq i c cmd'
     b _ = unsupported "ForLoop" f
     interval = do
@@ -423,7 +420,7 @@ exprExp (UnOp Receive (Prim (Qual Nothing (Id chan)))) = do
          receiveType :: D.Decl -> TranslateM (Type, PT.Type)
          receiveType (D.In goType balsaType) = return (goType, balsaType)
          receiveType (D.Chan goType balsaType) = return (goType, balsaType)
-         receiveType s = M.typeError "chan or <-chan" (show s)
+         receiveType s = M.unsupported "chan or <-chan" (show s)
 
 exprExp (BinOp op e e') = do
   op' <- lift (binOp op)
@@ -472,7 +469,7 @@ primExp (LitFunc sig block) = do
     M.newContext
     id' <- M.fresh
     declareTopLevel $ Func (Id id') sig block
-    c' <- D.declContext <$> M.popContext
+    c' <- D.subContext <$> M.popContext
     return (c', id')
   alterCmd (PT.BlockCmd pos c) (mkExpr $ explicit (FunctionType sig) $ PT.NameExpr pos (unpack i))
 -- TODO: add type checking here
@@ -508,7 +505,7 @@ simpleExp (Dec e) = simpleExp $ Assign e $ BinOp Operators.Subtract e (Prim (Lit
 simpleExp (Send chan e) = runContT ma return
   where
     checkSend (Channel Input _) _ = M.unsupported "sending on input channel" e
-    checkSend (Channel _ t) t' = typeCheck t t'
+    checkSend (Channel _ t) t' = t =?? t'
     checkSend t _ = M.unsupported "sending on non channel" t
     ma = do
       chan' <- exprExp chan
