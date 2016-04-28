@@ -8,7 +8,8 @@ module Language.SimpleGo.Types (
        primitives,
        assignableTo, convertibleTo,
        canTypeAs, defaultType,
-       translate
+       translate,
+       builtinByte
        ) where
 
 import           Prelude               hiding (lookup)
@@ -85,12 +86,13 @@ data UnTyped = DefaultBool
 -- See https://golang.org/ref/spec#Constants for a full implementation
 -- We will need to check for overflows, etc here
 canTypeAs :: UnTyped -> Type -> Bool
-canTypeAs DefaultBool = convertibleTo Bool
-canTypeAs DefaultRune = convertibleTo builtinRune
-canTypeAs DefaultInt = convertibleTo (Numeric GoInt)
-canTypeAs DefaultFloat64 = convertibleTo (Numeric Float64)
-canTypeAs DefaultComplex128 = convertibleTo (Complex Complex128)
-canTypeAs DefaultString = convertibleTo String
+canTypeAs u (Named _ t) = canTypeAs u t
+canTypeAs DefaultBool t = convertibleTo Bool t
+canTypeAs DefaultRune t = convertibleTo builtinRune t
+canTypeAs DefaultInt t = convertibleTo (Numeric GoInt) t
+canTypeAs DefaultFloat64 t = convertibleTo (Numeric Float64) t
+canTypeAs DefaultComplex128 t = convertibleTo (Complex Complex128) t
+canTypeAs DefaultString t = convertibleTo String t
 
 defaultType :: UnTyped -> Type
 defaultType DefaultBool = Bool

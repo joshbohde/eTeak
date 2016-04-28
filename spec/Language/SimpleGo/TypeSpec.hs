@@ -16,3 +16,9 @@ spec = do
 
     it "should be able to type an untyped int as an named int" $ do
       canTypeAs DefaultInt (Named "myint" (Numeric GoInt)) `shouldBe` True
+
+    it "should be able to type an untyped int as an named int" $ do
+      canTypeAs DefaultInt (Named "myint" (Numeric GoInt)) `shouldBe` True
+
+    it "should be able to type an untyped int as a byte" $ do
+      canTypeAs DefaultInt builtinByte `shouldBe` True
