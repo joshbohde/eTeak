@@ -20,7 +20,8 @@ import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
-import           Control.Monad                        (when)
+import           Control.Monad                        (unless, when)
+import           Control.Monad.State                  (get)
 import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
                                                        runContT)
 import           Language.Helpers                     (bind, eval, finish, teak,
@@ -35,6 +36,7 @@ import qualified Language.SimpleGo.Eval               as Eval
 import           Language.SimpleGo.Monad              (declare, unsupported)
 import qualified Language.SimpleGo.Monad              as M
 import           Language.SimpleGo.Process            (compileFile)
+import qualified Language.SimpleGo.Types              as Typed
 import qualified Language.SimpleGo.Types              as Types
 import qualified ParseTree                            as PT
 import           Print                                (showTree)
@@ -75,19 +77,13 @@ simpleExpression ma = runExprCmd ma >>= extract
     extract e = M.unsupported "ExprCmd" e
 
 
-data Explicitness = Explicit | Implicit
-                  deriving (Show, Eq)
-
 data TypedExpr = TypedExpr {
-  goType    :: Maybe (Explicitness, Type),
+  goType    :: Maybe (Either Types.UnTyped Type),
   balsaExpr ::  PT.Expr
   } deriving (Show, Eq)
 
-explicit :: Type -> Maybe (Explicitness, Type)
-explicit t = Just (Explicit, t)
-
-implicit :: Type -> Maybe (Explicitness, Type)
-implicit t = Just (Implicit, t)
+explicit t = TypedExpr (Just (Right t))
+implicit u = TypedExpr (Just (Left u))
 
 -- A data type representing the commands necessary to run before the
 -- result of some expression is available. This is necessary because
@@ -129,13 +125,16 @@ synthesizeFile f = do
 asBalsa :: Program -> TranslateM Context
 asBalsa program = do
   -- Implementation bug: "String" must be defined
-  declare "String" $ D.alias string
+  declare "String" $ D.alias (Id "string") string
   root' program
   D.declContext <$> M.popContext
 
 root' :: Program -> TranslateM ()
 root' program = do
-  forM_ Builtins.types $ \(n,t) -> declare (pack n) $ D.alias t
+  forM_ Types.primitives $ \(n, t) ->
+    case Prelude.lookup n Builtins.types of
+      (Just bt) -> declare (pack n) $ D.Type (Left t) $ PT.AliasType pos bt
+      Nothing -> return ()
   forM_ (declarations program) declareTopLevel
 
 
@@ -145,36 +144,33 @@ balsaType (SliceType typ) = PT.ArrayType (PT.Interval (0,0) bool) <$> balsaType 
 balsaType (FunctionType _) = return PT.NoType
 balsaType t = M.unsupported "type" t
 
-
--- unifyType :: AST.Type -> Maybe Types.Type -> TranslateM Types.Type
--- unifyType (AST.TypeName i)
--- unifyType (AST.ArrayType e t)
--- unifyType (AST.Channel k t)
--- unifyType (AST.FunctionType s)
--- unifyType (AST.MapType t t)
--- unifyType (AST.PointerType t)
--- unifyType (AST.SliceType t)
--- unifyType (AST.Struct fields)
--- unifyType (AST.EllipsisType t)
--- unifyType (AST.VariadicType t)
-
 typeDecl :: Type -> TranslateM D.Decl
-typeDecl t@(TypeName _) = D.alias <$> balsaType t
-typeDecl (Struct fields) = D.Type <$> record
+typeDecl t@(TypeName i) = D.alias i <$> balsaType t
+typeDecl t@(Struct fields) = D.Type (Right t) <$> record
   where
     record = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
     fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
     fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> balsaType typ
 typeDecl t = unsupported "type declaration" t
 
-typeCheck :: Type -> Maybe (Explicitness, Type) -> TranslateM ()
+typeCheck :: Type -> Maybe (Either Types.UnTyped Type) -> TranslateM ()
 typeCheck _ Nothing = return ()
-typeCheck (TypeName (Id "byte")) (Just (_, (TypeName (Id "uint8")))) = return ()
-typeCheck (TypeName a) t@(Just (Implicit, (TypeName b))) = when (a /= b && (not isNum)) $ M.typeError (show a) (show t)
+typeCheck t (Just e) = do
+  primitiveType <-  translate t
+  case e of
+    Left u -> unless (Types.canTypeAs u primitiveType) $
+      M.typeError (show t) (show u)
+    Right t' -> do
+      primitiveType' <- translate t'
+      unless (Types.assignableTo primitiveType primitiveType') $
+        M.typeError (show t) (show t')
   where
-    integrals = map Id ["byte", "int", "uint", "uint8"]
-    isNum = a `elem ` integrals && b == (Id "int")
-typeCheck a t@(Just (_, b)) = when (a /= b) $ M.typeError (show a) (show t)
+    lookup (Id i) = do
+      decl <- M.lookup' i
+      case decl of
+        (D.Type t _) -> return t
+        d -> M.unsupported "non type used as a type" d
+    translate = Types.translate (M.unsupported "type") lookup
 
 declareTopLevel :: Declaration -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
@@ -411,7 +407,8 @@ unOpExpr e f = do
   mayExpr <- exprExp e
   case mayExpr of
     Just (TypedExpr t e') -> do
-      bType <- lift $ maybe (return PT.NoType) (balsaType . snd) t
+--      bType <- lift $ maybe (return PT.NoType) (balsaType . snd) t
+      bType <- return PT.NoType
       return $ Just $ TypedExpr t $ f bType e'
     Nothing -> return Nothing
 
@@ -438,7 +435,7 @@ exprExp (UnOp Receive (Prim (Qual Nothing (Id chan)))) = do
            name = (unpack id')
            input = PT.InputCmd pos (PT.NameChan pos (unpack chan)) (PT.NameLvalue pos name)
            expr = PT.NameExpr pos name
-         return (input, Just $ TypedExpr (explicit goType) expr)
+         return (input, Just (explicit goType expr))
        where
          receiveType :: D.Decl -> TranslateM (Type, PT.Type)
          receiveType (D.In goType balsaType) = return (goType, balsaType)
@@ -470,8 +467,8 @@ alterCmd :: (PT.Cmd -> PT.Cmd)
 alterCmd f = mapContT (fmap (mapCmd f))
 
 primExp :: Prim -> ExprT ExprCmd
-primExp (LitInt i) = mkExpr $ TypedExpr (Just (Implicit, TypeName (Id "int"))) $ PT.ValueExpr pos byte (PT.IntValue i)
-primExp (LitStr s) = mkExpr $ TypedExpr (Just (Implicit, TypeName (Id "string"))) $ PT.ValueExpr pos string (PT.StringValue (unpack s))
+primExp (LitInt i) = mkExpr $ implicit Types.DefaultInt $ PT.ValueExpr pos byte (PT.IntValue i)
+primExp (LitStr s) = mkExpr $ implicit Types.DefaultString $ PT.ValueExpr pos string (PT.StringValue (unpack s))
 -- todo add type checking here
 primExp (Qual (Just struct) id') = mkExpr $ TypedExpr Nothing $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id')
 primExp (Qual Nothing (Id id')) = do
@@ -486,7 +483,7 @@ primExp (Qual Nothing (Id id')) = do
       (Just (D.Param t _)) -> return t
       (Just (D.Proc t _ _)) -> return t
       Nothing -> M.notDefined (unpack id')
-  mkExpr $ TypedExpr (explicit typ') $ PT.NameExpr pos (unpack id')
+  mkExpr $ explicit typ' $ PT.NameExpr pos (unpack id')
 primExp (LitFunc sig block) = do
   (c, i) <- lift $ do
     M.newContext
@@ -494,7 +491,7 @@ primExp (LitFunc sig block) = do
     declareTopLevel $ Func (Id id') sig block
     c' <- D.declContext <$> M.popContext
     return (c', id')
-  alterCmd (PT.BlockCmd pos c) (mkExpr $ TypedExpr (explicit $ FunctionType sig) $ PT.NameExpr pos (unpack i))
+  alterCmd (PT.BlockCmd pos c) (mkExpr $ explicit (FunctionType sig) $ PT.NameExpr pos (unpack i))
 -- TODO: add type checking here
 primExp (Call p es me) = do
   callable <- primExp p
@@ -516,7 +513,7 @@ primExp (Index p e) = do
   m <- (,) <$$> primExp p <**> exprExp e
   forM m $ uncurry index
   where
-    index (TypedExpr (Just (_, (ArrayType _ t))) arr) (TypedExpr _ i) = return $ TypedExpr (explicit t) $ PT.IndexExpr pos arr i
+    index (TypedExpr (Just (Right (ArrayType _ t))) arr) (TypedExpr _ i) = return $ explicit t $ PT.IndexExpr pos arr i
 
 primExp (Paren e) = exprExp e
 primExp s = lift $ M.unsupported  "primitive" s
@@ -533,7 +530,7 @@ simpleExp (Send chan e) = runContT ma return
     ma = do
       chan' <- exprExp chan
       case chan' of
-        (Just (TypedExpr (Just (_, chanType)) (PT.NameExpr _ id'))) -> do
+        (Just (TypedExpr (Just (Right chanType)) (PT.NameExpr _ id'))) -> do
           (TypedExpr t e') <- forceExp e
           lift $ checkSend chanType t
           let
@@ -545,12 +542,12 @@ simpleExp s@(SimpVar (Id id') e) = runContT ma return
     ma = do
       (TypedExpr mayType ex) <- forceExp e
       case mayType of
-        Just (_, t) -> do
+        Just (Right t) -> do
           lift $ do
             btype <- balsaType t
             declare id' $ D.Var t btype Nothing
           return $ ExprCmd (Just $ PT.AssignCmd pos (PT.NameLvalue pos (unpack id')) ex) Nothing
-        Nothing -> lift $ unsupported "simple expression " s
+        _ -> lift $ unsupported "simple expression " s
 simpleExp (SimpleExpr e) = runExprCmd (exprExp e)
 simpleExp s = unsupported "simple expression " s
 

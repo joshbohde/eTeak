@@ -63,8 +63,8 @@ primitives = [
   ("uint16", Numeric Uint16),
   ("uint32", Numeric Uint32),
   ("uint64", Numeric Uint64),
-  ("goint", Numeric GoInt),
-  ("gouint", Numeric GoUint),
+  ("int", Numeric GoInt),
+  ("uint", Numeric GoUint),
   ("uintptr", Numeric Uintptr),
   ("float32", Numeric Float32),
   ("float64", Numeric Float64),
@@ -79,6 +79,7 @@ data UnTyped = DefaultBool
              | DefaultFloat64
              | DefaultComplex128
              | DefaultString
+             deriving (Eq, Show)
 
 -- This isn't strictly right, but will work for now
 -- See https://golang.org/ref/spec#Constants for a full implementation
@@ -124,12 +125,16 @@ underlying :: Type -> Type
 underlying (Named _ t) = t
 underlying t = t
 
-translate :: (Monad m) => (String -> m Type) -> (AST.Id -> m AST.Type) -> AST.Type -> m Type
+translate :: (Monad m) => (String -> m Type) -> (AST.Id -> m (Either Type AST.Type)) -> AST.Type -> m Type
 translate err lookup = go
   where
     goSig (AST.Signature ins outs) = Signature <$> traverse paramType ins <*> traverse paramType outs
     paramType (AST.Param _ t) = go t
-    go (AST.TypeName i) = lookup i >>= go
+    go (AST.TypeName i) = do
+      found <- lookup i
+      case found of
+        Left t -> return t
+        Right a -> go a
     -- only support static sizes at this point
     go (AST.ArrayType (AST.Prim (AST.LitInt i)) t) = Array i <$> go t
     go (AST.Channel k t) = Chan k <$> go t

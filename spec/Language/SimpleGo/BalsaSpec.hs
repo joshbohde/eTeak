@@ -18,8 +18,8 @@ spec = do
   describe "balsaType" $
     it "should convert a struct" $ do
       let struct = S.Struct [(S.Id "b", S.TypeName (S.Id "bool"))]
-      t <- B.runTranslateT $ B.typeDecl struct
-      t `shouldBe` (Right $ D.Type $ PT.RecordType D.pos [PT.RecordElem D.pos "b" (PT.NameType D.pos "bool")] PT.NoType)
+      (Right (D.Type _ t)) <- B.runTranslateT $ B.typeDecl struct
+      t `shouldBe` (PT.RecordType D.pos [PT.RecordElem D.pos "b" (PT.NameType D.pos "bool")] PT.NoType)
 
 
   describe "primExp" $ do

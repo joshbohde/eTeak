@@ -17,11 +17,12 @@ import qualified Context   as C
 import qualified ParseTree as PT
 import qualified Report    as R
 import qualified Language.SimpleGo.AST as AST
+import qualified Language.SimpleGo.Types as Types
 
 type Binding = C.Binding PT.Decl
 type Context = C.Context PT.Decl
 
-data Decl = Type PT.TypeBody
+data Decl = Type (Either Types.Type AST.Type) PT.TypeBody
           | Const AST.Type PT.Expr
           | Var AST.Type PT.Type (Maybe PT.Expr)
           | Chan AST.Type PT.Type
@@ -32,8 +33,8 @@ data Decl = Type PT.TypeBody
           | Param AST.Type PT.Type
           deriving (Show, Eq)
 
-alias :: PT.Type -> Decl
-alias = Type . PT.AliasType pos
+alias :: AST.Id -> PT.Type -> Decl
+alias s = Type (Right $ AST.TypeName s) . PT.AliasType pos
 
 pos :: R.Pos
 pos = R.NoPos
@@ -53,7 +54,7 @@ buildContext mb as = C.bindingsToContext1 <$> buildBindings mb as
 declContext :: [(T.Text, Decl)] -> Context
 declContext decls = C.bindingsToContext1 $ zipWith binding [0..] decls
   where
-    b (Type t) = (C.TypeNamespace, PT.TypeDecl pos t)
+    b (Type _ t) = (C.TypeNamespace, PT.TypeDecl pos t)
     b (Const _ e) = (C.OtherNamespace, PT.ExprDecl pos e)
     b (Var _ _ (Just e)) = (C.OtherNamespace, PT.ExprDecl pos e)
     b (Var _ t Nothing) = (C.OtherNamespace, PT.VarDecl pos t)
