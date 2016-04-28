@@ -5,11 +5,11 @@ module Language.SimpleGo.Types (
        NumType(..),
        CmplxType(..),
        UnTyped(..),
+       Signature(..),
        primitives,
        assignableTo, convertibleTo,
        canTypeAs, defaultType,
-       translate,
-       builtinByte
+       builtinByte, builtinRune
        ) where
 
 import           Prelude               hiding (lookup)
@@ -126,23 +126,3 @@ convertibleTo t u = assignableTo t u
 underlying :: Type -> Type
 underlying (Named _ t) = t
 underlying t = t
-
-translate :: (Monad m) => (String -> m Type) -> (AST.Id -> m (Either Type AST.Type)) -> AST.Type -> m Type
-translate err lookup = go
-  where
-    goSig (AST.Signature ins outs) = Signature <$> traverse paramType ins <*> traverse paramType outs
-    paramType (AST.Param _ t) = go t
-    go (AST.TypeName i) = do
-      found <- lookup i
-      case found of
-        Left t -> return t
-        Right a -> go a
-    -- only support static sizes at this point
-    go (AST.ArrayType (AST.Prim (AST.LitInt i)) t) = Array i <$> go t
-    go (AST.Channel k t) = Chan k <$> go t
-    go (AST.FunctionType sig) = Func <$> goSig sig
-    go (AST.MapType t t') = Map <$> go t <*> go t'
-    go (AST.PointerType t) = Ptr <$> go t
-    go (AST.SliceType t) = Slice <$> go t
-    go (AST.Struct fields) = Struct <$> traverse (traverse go) fields
-    go t = err $ "can't translate type: " ++ show t

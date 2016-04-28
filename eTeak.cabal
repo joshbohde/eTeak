@@ -98,10 +98,12 @@ library
                    GuiSupport
                    Language.Helpers
                    Language.SimpleGo.AST
+                   Language.SimpleGo.AST.Name
                    Language.SimpleGo.AST.Operators
                    Language.SimpleGo.Balsa
                    Language.SimpleGo.Balsa.Builtins
                    Language.SimpleGo.Balsa.Declarations
+                   Language.SimpleGo.Balsa.Types
                    Language.SimpleGo.Env
                    Language.SimpleGo.Eval
                    Language.SimpleGo.Monad

@@ -42,6 +42,8 @@ import qualified ParseTree                            as PT
 import           Print                                (showTree)
 import qualified Report                               as R
 
+typeCheck = undefined
+
 type TranslateM = M.TranslateT IO Decl
 
 -- ContT specialized for TranslateM
@@ -152,25 +154,6 @@ typeDecl t@(Struct fields) = D.Type (Right t) <$> record
     fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
     fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> balsaType typ
 typeDecl t = unsupported "type declaration" t
-
-typeCheck :: Type -> Maybe (Either Types.UnTyped Type) -> TranslateM ()
-typeCheck _ Nothing = return ()
-typeCheck t (Just e) = do
-  primitiveType <-  translate t
-  case e of
-    Left u -> unless (Types.canTypeAs u primitiveType) $
-      M.typeError (show t) (show u)
-    Right t' -> do
-      primitiveType' <- translate t'
-      unless (Types.assignableTo primitiveType primitiveType') $
-        M.typeError (show t) (show t')
-  where
-    lookup (Id i) = do
-      decl <- M.lookup' i
-      case decl of
-        (D.Type t _) -> return t
-        d -> M.unsupported "non type used as a type" d
-    translate = Types.translate (M.unsupported "type") lookup
 
 declareTopLevel :: Declaration -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
