@@ -12,7 +12,7 @@ import           Data.Either                   (isLeft)
 import qualified Data.Map                      as M
 
 import qualified Language.SimpleGo.AST         as AST
-import           Language.SimpleGo.AST.Name    (Name, name)
+import           Language.SimpleGo.AST.Name    (Name)
 import           Language.SimpleGo.Balsa.Types
 import qualified Language.SimpleGo.Types       as Types
 
@@ -33,6 +33,7 @@ instance TypeNamespace TypeM where
   declare n t = modify' (TypeMap . M.insert n t . unTypeMap)
   typeError = lift . Left
 
+
 spec :: Spec
 spec = do
   let
@@ -44,7 +45,7 @@ spec = do
       let
         c = do
           prelude
-          AST.TypeName (AST.Id "int") =? Left (Types.DefaultInt)
+          AST.TypeName (AST.Id "int") =? Left Types.DefaultInt
       runTypeM c `shouldBe` Right ()
 
     it "should be able to assign an int alias an untyped int" $ do
@@ -52,7 +53,7 @@ spec = do
         c = do
           prelude
           declareNamedType "myint" (AST.TypeName (AST.Id "int")) undefined
-          AST.TypeName (AST.Id "myint") =? Left (Types.DefaultInt)
+          AST.TypeName (AST.Id "myint") =? Left Types.DefaultInt
       runTypeM c `shouldBe` Right ()
 
     it "should not be able to assign an int alias an int" $ do
