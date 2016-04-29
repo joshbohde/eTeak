@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 -- |
 
 module Language.SimpleGo.Types (
@@ -12,13 +13,14 @@ module Language.SimpleGo.Types (
        builtinByte, builtinRune
        ) where
 
-import           Prelude               hiding (lookup)
+import           Prelude                    hiding (lookup)
 
-import           Data.Vector           (Vector)
+import           Data.Vector                (Vector)
 
-import qualified Language.SimpleGo.AST as AST
+import qualified Language.SimpleGo.AST      as AST
+import           Language.SimpleGo.AST.Name (Name)
 
-data Type = Named String Type
+data Type = Named Name Type
           | Bool
           | Numeric NumType
           | Complex CmplxType
@@ -47,10 +49,10 @@ data CmplxType = Complex64 | Complex128
   deriving (Show, Eq)
 
 builtinByte :: Type
-builtinByte = Named "byte" (Numeric Uint8)
+builtinByte = Numeric Uint8
 
 builtinRune :: Type
-builtinRune = Named "rune" (Numeric Int32)
+builtinRune = Numeric Int32
 
 primitives :: [(String, Type)]
 primitives = [
@@ -108,8 +110,6 @@ assignableTo (Named _ t1@(Chan _ _))
              t2@(Chan _ _) = assignableTo t1 t2
 assignableTo t1@(Chan _ _)
              (Named _ t2@(Chan _ _)) = assignableTo t1 t2
-assignableTo (Named _ t) u = t == u
-assignableTo t (Named _ u) = t == u
 assignableTo (Chan AST.Bidirectional t1) (Chan _ t2) = t1 == t2
 assignableTo t u = t == u
 

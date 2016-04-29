@@ -219,6 +219,7 @@ Test-Suite spec
   main-is:        Main.hs
 
   other-modules:  Language.SimpleGo.BalsaSpec
+                  Language.SimpleGo.Balsa.TypesSpec
                   Language.SimpleGo.Helpers
                   Language.SimpleGo.ProcessSpec
                   Language.SimpleGo.TypeSpec
@@ -227,6 +228,7 @@ Test-Suite spec
                 , eTeak
                 , language-go
                 , QuickCheck
+                , containers
                 , hspec
                 , vector
                 , mtl

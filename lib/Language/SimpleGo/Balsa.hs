@@ -163,9 +163,8 @@ declareTopLevel (Var (Id id') typ e) = do
       typ =?? t'
       declare id' $ D.Var typ t (Just e')
 declareTopLevel (Type id' typ) = do
-  goType <- BT.translate typ
   balsaType <- typeDecl typ
-  BT.declare (name (unId id')) $ BT.TypeDeclaration goType balsaType
+  BT.declareNamedType (name (unId id')) typ balsaType
   where
    typeDecl t@(TypeName i) = PT.AliasType pos <$> balsaType t
    typeDecl t@(Struct fields) = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType

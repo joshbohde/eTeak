@@ -1,6 +1,3 @@
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-
 -- | A module to declare and operate on both go and balsa types
 
 module Language.SimpleGo.Balsa.Types (
@@ -8,18 +5,14 @@ module Language.SimpleGo.Balsa.Types (
   TypeError(..),
   TypeNamespace(..),
   declareBuiltins,
-  TypeM, runTypeM,
-  alias, translate, (=?)
+  declareNamedType,
+  (=?)
   ) where
 
 import           Prelude                          hiding (lookup)
 import qualified Prelude
 
 import           Control.Monad                    (forM_, unless)
-import           Control.Monad.State              (StateT, evalStateT, get,
-                                                   modify')
-import           Control.Monad.Trans              (lift)
-import qualified Data.Map                         as M
 
 import qualified Language.SimpleGo.AST            as AST
 import           Language.SimpleGo.AST.Name       (Name, name)
@@ -51,10 +44,11 @@ declareBuiltins = forM_ GoTypes.primitives $ \(n, t) ->
       (Just bt) -> declare (name n) $ TypeDeclaration t $ PT.AliasType R.NoPos bt
       Nothing -> return ()
 
-alias :: (TypeNamespace m) => AST.Id -> PT.Type -> m ()
-alias s@(AST.Id i) p = do
-  goType <- translate $ AST.TypeName s
-  declare (name i) $ TypeDeclaration goType $ PT.AliasType R.NoPos p
+
+declareNamedType :: (TypeNamespace m) => Name -> AST.Type -> PT.TypeBody -> m ()
+declareNamedType n t balsaBody = do
+    goType <- translate t
+    declare n $ TypeDeclaration (GoTypes.Named n goType) balsaBody
 
 
 translate :: (TypeNamespace m) => AST.Type -> m GoTypes.Type
@@ -73,8 +67,20 @@ translate = go
     go (AST.PointerType t) = GoTypes.Ptr <$> go t
     go (AST.SliceType t) = GoTypes.Slice <$> go t
     go (AST.Struct fields) = GoTypes.Struct <$> traverse (traverse go) fields
+
     go t = typeError $ UnsupportedType t
 
+
+{- $ Type Checking
+
+Check if the lhs can be assigned the type of the rhs, throwing an error if they cannot.
+Example usage:
+
+@
+('TypeName' "byte") =? ('Right' ('TypeName' "string"))
+@
+
+-}
 
 (=?) :: (TypeNamespace m) => AST.Type -> Either GoTypes.UnTyped AST.Type -> m ()
 lhs =? rhs = do
@@ -84,20 +90,5 @@ lhs =? rhs = do
       typeError $ IncompatibleUntyped lht untype
     Right r -> do
       rht <- translate r
-      unless (GoTypes.assignableTo lht rht) $
+      unless (GoTypes.assignableTo rht lht) $
         typeError $ Incompatible lht rht
-
-newtype TypeMap = TypeMap { unTypeMap :: M.Map Name TypeDeclaration }
-type TypeM = StateT TypeMap (Either TypeError)
-
-runTypeM :: TypeM a -> Either TypeError a
-runTypeM s = evalStateT s (TypeMap M.empty)
-
-instance TypeNamespace TypeM where
-  lookup n = do
-    (TypeMap m) <- get
-    case M.lookup n m of
-      Nothing -> lift $ Left (Unfound n)
-      Just a -> return a
-  declare n t = modify' (TypeMap . M.insert n t . unTypeMap)
-  typeError = lift . Left
