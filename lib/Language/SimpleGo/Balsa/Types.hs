@@ -125,3 +125,10 @@ lhs =? rhs = do
       rht <- translate r
       unless (GoTypes.assignableTo rht lht) $
         typeError $ Incompatible lht rht
+
+
+isIntegral :: (TypeNamespace m) => Either GoTypes.UnTyped AST.Type -> m Bool
+isIntegral (Left u) = return $ GoTypes.canTypeAs u (GoTypes.Numeric GoTypes.GoInt)
+isIntegral (Right t) = do
+  rht <- translate t
+  return $ GoTypes.convertibleTo (GoTypes.Numeric GoTypes.GoInt) rht
