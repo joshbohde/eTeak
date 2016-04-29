@@ -19,7 +19,8 @@ import qualified Report                        as R
 type Binding = C.Binding PT.Decl
 type Context = C.Context PT.Decl
 
-data Decl = Const AST.Type PT.Expr
+data Decl = Type Types.TypeDeclaration
+          | Const AST.Type PT.Expr
           | Var AST.Type PT.Type (Maybe PT.Expr)
           | Chan AST.Type PT.Type
           | Proc AST.Type Context PT.Cmd
@@ -36,6 +37,7 @@ class HasPTDecl a where
   mkDecl :: a -> (C.Namespace, PT.Decl)
 
 instance HasPTDecl Decl where
+  mkDecl (Type (Types.TypeDeclaration _ t)) = (C.TypeNamespace, PT.TypeDecl pos t)
   mkDecl (Const _ e) = (C.OtherNamespace, PT.ExprDecl pos e)
   mkDecl (Var _ _ (Just e)) = (C.OtherNamespace, PT.ExprDecl pos e)
   mkDecl (Var _ t Nothing) = (C.OtherNamespace, PT.VarDecl pos t)
@@ -45,9 +47,6 @@ instance HasPTDecl Decl where
   mkDecl (In _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Input t)
   mkDecl (Out _ t) = (C.OtherNamespace, PT.PortDecl pos PT.Output t)
   mkDecl (Param _ t) = (C.OtherNamespace, PT.ParamDecl pos True t)
-
-instance HasPTDecl Types.TypeDeclaration where
-  mkDecl (Types.TypeDeclaration _ t) = (C.TypeNamespace, PT.TypeDecl pos t)
 
 instance (HasPTDecl a, HasPTDecl b) => HasPTDecl (Either a b) where
   mkDecl (Right a) = mkDecl a
@@ -65,7 +64,7 @@ buildContext decls = C.bindingsToContext1 $ zipWith binding [0..] decls
       where
         (namespace, decl) = mkDecl a
 
-topLevelContext :: [(T.Text, Either Types.TypeDeclaration Decl)] -> Context
+topLevelContext :: [(T.Text, Decl)] -> Context
 topLevelContext decls = buildContext totalDecls
   where
     totalDecls = map (fmap Left) builtins ++ map (fmap Right) decls

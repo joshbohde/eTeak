@@ -130,7 +130,7 @@ synthesizeFile f = do
 asBalsa :: Program -> TranslateM Context
 asBalsa program = do
   root' program
-  D.topLevelContext <$> M.topLevel
+  D.topLevelContext <$> M.popContext
 
 root' :: Program -> TranslateM ()
 root' program = do
