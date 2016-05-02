@@ -8,6 +8,7 @@ module Language.SimpleGo.Balsa.Types (
   -- $declaration
   declareBuiltins,
   declareNamedType,
+  canonicalType,
   -- * Type Checking
   -- $typechecking
   (=?)
@@ -50,6 +51,7 @@ declaration is not found.
    -}
   lookup :: Name -> m TypeDeclaration
 
+
   {-| Make a declaration. This is expected to throw an `AlreadyDeclared` if the
     declaration already exists.
   -}
@@ -77,14 +79,14 @@ declareBuiltins = forM_ GoTypes.primitives $ \(n, t) ->
 -}
 declareNamedType :: (TypeNamespace m) => Name -> AST.Type -> PT.TypeBody -> m ()
 declareNamedType n t balsaBody = do
-    goType <- translate t
+    goType <- canonicalType t
     declare n $ TypeDeclaration (GoTypes.Named n goType) balsaBody
 
 
-translate :: (TypeNamespace m) => AST.Type -> m GoTypes.Type
-translate = go
+canonicalType :: (TypeNamespace m) => AST.Type -> m GoTypes.Type
+canonicalType = go
   where
-    goSig (AST.Signature ins outs) = GoTypes.Signature <$> traverse paramType ins <*> traverse paramType outs
+    goSig (AST.Signature ins var outs) = GoTypes.Signature <$> traverse paramType ins <*> traverse paramType var <*> traverse paramType outs
     paramType (AST.Param _ t) = go t
     go (AST.TypeName (AST.Id i)) = do
       (TypeDeclaration t _) <- lookup (name i)
@@ -115,20 +117,14 @@ Example usage:
 
 -}
 
-(=?) :: (TypeNamespace m) => AST.Type -> Either GoTypes.UnTyped AST.Type -> m ()
-lhs =? rhs = do
-  lht <- translate lhs
-  case rhs of
-    Left untype -> unless (GoTypes.canTypeAs untype lht) $
-      typeError $ IncompatibleUntyped lht untype
-    Right r -> do
-      rht <- translate r
-      unless (GoTypes.assignableTo rht lht) $
-        typeError $ Incompatible lht rht
+(=?) :: (TypeNamespace m) => GoTypes.Type -> Either GoTypes.UnTyped GoTypes.Type -> m ()
+lhs =? rhs = case rhs of
+    Left untype -> unless (GoTypes.canTypeAs untype lhs) $
+      typeError $ IncompatibleUntyped lhs untype
+    Right rht -> unless (GoTypes.assignableTo rht lhs) $
+        typeError $ Incompatible lhs rht
 
 
-isIntegral :: (TypeNamespace m) => Either GoTypes.UnTyped AST.Type -> m Bool
-isIntegral (Left u) = return $ GoTypes.canTypeAs u (GoTypes.Numeric GoTypes.GoInt)
-isIntegral (Right t) = do
-  rht <- translate t
-  return $ GoTypes.convertibleTo (GoTypes.Numeric GoTypes.GoInt) rht
+isIntegral :: Either GoTypes.UnTyped GoTypes.Type -> Bool
+isIntegral (Left u) = GoTypes.canTypeAs u (GoTypes.Numeric GoTypes.GoInt)
+isIntegral (Right t) =  GoTypes.convertibleTo (GoTypes.Numeric GoTypes.GoInt) t

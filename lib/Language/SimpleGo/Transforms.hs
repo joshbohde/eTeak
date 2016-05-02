@@ -15,7 +15,7 @@ exprM :: Monad m => (Expr -> m Expr)
 exprM ma e = f e >>= ma
   where
     decl (Const i t expr') = Const i t <$> go expr'
-    decl (Var i t expr') = Const i t <$> go expr'
+    decl (Var i t expr') = Var i t <$> go expr'
     decl (Func i sig block) = Func i sig <$> blk block
     decl t = pure t
 

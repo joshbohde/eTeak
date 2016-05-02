@@ -39,7 +39,7 @@ data Program = Program {
 newtype Id = Id { idText :: T.Text } deriving (Eq, Show, Read)
 
 
-data Declaration = Const Id Type Expr
+data Declaration = Const Id (Maybe Type) Expr
                  | Var Id Type Expr
                  | Type Id Type
                  | Func Id Signature Block
@@ -49,8 +49,9 @@ data Rec = Rec Bool (Maybe Id) Type
          deriving (Eq, Read, Show)
 
 data Signature = Signature {
-  input  :: U.Vector Param,
-  output :: U.Vector Param
+  input    :: U.Vector Param,
+  variadic :: Maybe Param,
+  output   :: U.Vector Param
   } deriving (Eq, Read, Show)
 
 data Param = Param (Maybe Id) Type
@@ -65,7 +66,6 @@ data Type = TypeName Id
           | SliceType Type
           | Struct [(Id, Type)]
           | EllipsisType Type -- only in Literals
-          | VariadicType Type -- only in Funcs
           deriving (Eq, Read, Show)
 
 

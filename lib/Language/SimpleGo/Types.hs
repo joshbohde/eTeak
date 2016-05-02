@@ -21,7 +21,8 @@ import           Data.Vector                (Vector)
 import qualified Language.SimpleGo.AST      as AST
 import           Language.SimpleGo.AST.Name (Name)
 
-data Type = Named Name Type
+data Type = Any
+          | Named Name Type
           | Bool
           | Numeric NumType
           | Complex CmplxType
@@ -36,7 +37,7 @@ data Type = Named Name Type
           | Func Signature
           deriving (Show, Eq)
 
-data Signature = Signature (Vector Type) (Vector Type)
+data Signature = Signature (Vector Type) (Maybe Type) (Vector Type)
                deriving (Show, Eq)
 
 

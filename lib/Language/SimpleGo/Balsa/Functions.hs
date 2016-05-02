@@ -1,5 +1,5 @@
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleContexts #-}
 -- |
 
 module Language.SimpleGo.Balsa.Functions where
@@ -68,28 +68,3 @@ func multi(tmp5 <-chan multi_in, tmp6 chan<- multi_out){
 -}
 
 import qualified Data.Text as T
-
-import qualified Language.SimpleGo.AST        as AST
-import qualified Language.SimpleGo.Balsa.Expr as Expr
-import qualified Language.SimpleGo.Balsa.Types as Types
-import Language.SimpleGo.Balsa.Unique (UniqueSupply)
-
-data Function m cmd a = Function {
-  call :: [Expr.Expr a] -> Maybe (Expr.Expr a) -> m ([cmd], [Expr.Expr a]),
-  body :: [cmd]
-  }
-
-type GoFunction m = Function m AST.Statement AST.Expr
-
--- we'll actually need to do type canonicalization here
-
-decl :: (UniqueSupply m T.Text) => [(AST.Id, AST.Type)] -> [(AST.Id, AST.Type)] -> m ([AST.Declaration], (AST.Id, AST.Type), AST.Block)
-decl ins out = undefined
-
-
-translate :: (Types.TypeNamespace m, UniqueSupply m T.Text)
-            => AST.Signature -> AST.Block -> m (GoFunction m)
-translate (AST.Signature inputs outputs) block = Function <$> call' inputs outputs <*> body'
-  where
-    call' ins var = undefined
-    body' = undefined

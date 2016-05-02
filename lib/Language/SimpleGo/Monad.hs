@@ -47,7 +47,7 @@ def = TranslationState {
 
 type TranslateT m decl = ExceptT Msg (StateT (TranslationState decl) m)
 
-instance (Monad m) => Types.TypeNamespace (TranslateT m Declarations.Decl) where
+instance (Monad m) => Types.TypeNamespace (TranslateT m (Declarations.Decl a)) where
   lookup (Name t) = do
     decl <- lookup t
     case decl of

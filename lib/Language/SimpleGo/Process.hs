@@ -53,7 +53,7 @@ constDeclarations cs = evalStateT (runListT f) (Nothing, 0)
       iota <- gets snd
       (id', typ, expr) <- flattenCVSpec c
       put (Just c, succ iota)
-      return $ S.Const id' typ (Transforms.replaceIota iota expr)
+      return $ S.Const id' (Just typ) (Transforms.replaceIota iota expr)
 
     f :: ListT (StateT (Maybe Go.GoCVSpec, Integer) m) S.Declaration
     f = do
@@ -149,7 +149,7 @@ asId :: Go.GoId -> S.Id
 asId (Go.GoId i) = S.Id (fromString i)
 
 asSig :: MonadError String m => Go.GoSig -> m S.Signature
-asSig (Go.GoSig input output) = S.Signature <$> toParams input <*> toParams output
+asSig (Go.GoSig input output) = S.Signature <$> toParams input <*> pure Nothing <*> toParams output
 
 toParams :: forall m. MonadError String m => [Go.GoParam] -> m (U.Vector S.Param)
 toParams ps = U.fromList <$> mapM toParam ps

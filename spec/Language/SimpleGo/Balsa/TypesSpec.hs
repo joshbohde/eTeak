@@ -45,7 +45,8 @@ spec = do
       let
         c = do
           prelude
-          AST.TypeName (AST.Id "int") =? Left Types.DefaultInt
+          t <- canonicalType $ AST.TypeName (AST.Id "int")
+          t =? Left Types.DefaultInt
       runTypeM c `shouldBe` Right ()
 
     it "should be able to assign an int alias an untyped int" $ do
@@ -53,7 +54,8 @@ spec = do
         c = do
           prelude
           declareNamedType "myint" (AST.TypeName (AST.Id "int")) undefined
-          AST.TypeName (AST.Id "myint") =? Left Types.DefaultInt
+          t <- canonicalType $ AST.TypeName (AST.Id "myint")
+          t =? Left Types.DefaultInt
       runTypeM c `shouldBe` Right ()
 
     it "should not be able to assign an int alias an int" $ do
@@ -61,5 +63,7 @@ spec = do
         c = do
           prelude
           declareNamedType "myint" (AST.TypeName (AST.Id "int")) undefined
-          AST.TypeName (AST.Id "myint") =? Right (AST.TypeName (AST.Id "int"))
+          t <- canonicalType $ AST.TypeName (AST.Id "myint")
+          r <- canonicalType $ AST.TypeName (AST.Id "int")
+          t =? Right r
       runTypeM c `shouldSatisfy` isLeft

@@ -9,30 +9,28 @@ module Language.SimpleGo.Balsa  (
   TranslateM, M.runTranslateT, pos, primExp, simpleExp, runExprCmd, ExprCmd(..), TypedExpr(..)
   ) where
 
-import           Control.Monad                        (forM, forM_, unless,
-                                                       when)
+import           Control.Monad                        (forM, forM_)
 import           Control.Monad.Except                 (ExceptT (..), runExceptT,
                                                        withExceptT)
-import           Control.Monad.State                  (get)
 import           Control.Monad.Trans                  (lift, liftIO)
 import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
                                                        runContT)
 import           Data.Functor.Compose                 (Compose (..))
 import           Data.Maybe                           (fromMaybe)
-import           Data.Text                            (pack, unpack)
+import           Data.Text                            (unpack)
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
 import           Language.Helpers                     (bind, eval, finish, teak,
                                                        writeGates, writeTeak)
 import           Language.SimpleGo.AST
-import           Language.SimpleGo.AST.Name           (name)
+import           Language.SimpleGo.AST.Name           (Name (..), name)
 import qualified Language.SimpleGo.AST.Operators      as Operators
 import           Language.SimpleGo.Balsa.Builtins     (bool, byte, string)
 import qualified Language.SimpleGo.Balsa.Builtins     as Builtins
-import           Language.SimpleGo.Balsa.Declarations (Context, Decl)
+import           Language.SimpleGo.Balsa.Declarations (Context)
 import qualified Language.SimpleGo.Balsa.Declarations as D
-import           Language.SimpleGo.Balsa.Types        ((=?))
+import           Language.SimpleGo.Balsa.Types        (canonicalType, (=?))
 import qualified Language.SimpleGo.Balsa.Types        as BT
 import qualified Language.SimpleGo.Eval               as Eval
 import           Language.SimpleGo.Monad              (declare, unsupported)
@@ -42,6 +40,10 @@ import qualified Language.SimpleGo.Types              as Types
 import qualified ParseTree                            as PT
 import           Print                                (showTree)
 import qualified Report                               as R
+
+type Call = [TypedExpr] -> Maybe TypedExpr -> (Maybe PT.Cmd, Maybe PT.Expr)
+
+type Decl = D.Decl Call
 
 type TranslateM = M.TranslateT IO Decl
 
@@ -78,15 +80,14 @@ simpleExpression ma = runExprCmd ma >>= extract
 
 
 data TypedExpr = TypedExpr {
-  goType    :: Maybe (Either Types.UnTyped Type),
+  goType    :: Either Types.UnTyped Types.Type,
   balsaExpr ::  PT.Expr
   } deriving (Show, Eq)
 
-explicit t = TypedExpr (Just (Right t))
-implicit u = TypedExpr (Just (Left u))
+explicit t = TypedExpr (Right t)
+implicit u = TypedExpr (Left u)
 
-a =?? Nothing = return ()
-a =?? (Just b) = a =? b
+explicitType = either Types.defaultType id
 
 -- A data type representing the commands necessary to run before the
 -- result of some expression is available. This is necessary because
@@ -133,52 +134,77 @@ asBalsa program = do
 root' :: Program -> TranslateM ()
 root' program = do
   BT.declareBuiltins
+  declare "print" $ D.Proc (Types.Func (Types.Signature U.empty (Just Types.Any) U.empty)) C.EmptyContext PT.NoCmd printBuiltin
   forM_ (declarations program) declareTopLevel
 
 
-balsaType :: Type -> TranslateM PT.Type
-balsaType (TypeName id') = return $ PT.NameType pos (unId id')
-balsaType (SliceType typ) = PT.ArrayType (PT.Interval (0,0) bool) <$> balsaType typ
-balsaType (FunctionType _) = return PT.NoType
-balsaType t = M.unsupported "type" t
+--balsaType :: Type -> TranslateM PT.Type
+--balsaType (TypeName id') = return $ PT.NameType pos (unId id')
+--balsaType (SliceType typ) = PT.ArrayType (PT.Interval (0,0) bool) <$> balsaType typ
+--balsaType (FunctionType _) = return PT.NoType
+--balsaType t = M.unsupported "type" t
+
+canonicalBalsaType :: Types.Type -> TranslateM PT.Type
+canonicalBalsaType (Types.Named (Name n) _) = return $ PT.NameType pos (unpack n)
+canonicalBalsaType Types.Bool = return Builtins.bool
+canonicalBalsaType t@(Types.Numeric n) = case n of
+       Types.Int8 -> return Builtins.int8
+       Types.Int16 -> return Builtins.int16
+       Types.Int32 -> return Builtins.int32
+       Types.Int64 -> return Builtins.int64
+       Types.Uint8 -> return Builtins.uint8
+       Types.Uint16 -> return Builtins.uint16
+       Types.Uint32 -> return Builtins.uint32
+       Types.Uint64 -> return Builtins.uint64
+       Types.GoInt -> return Builtins.int
+       Types.GoUint -> return Builtins.uint
+       _ -> M.unsupported "type" t
+canonicalBalsaType Types.String = return Builtins.string
+canonicalBalsaType (Types.Array i t) = PT.ArrayType (PT.Interval (0, i) Builtins.int) <$> canonicalBalsaType t
+canonicalBalsaType t@(Types.Chan _ _) = M.unsupported "type: chan types must be statically declared: " t
+canonicalBalsaType t@(Types.Struct _) = M.unsupported "type: anonymous structs are not supported: " t
+canonicalBalsaType (Types.Func _) = return PT.NoType
+canonicalBalsaType t = M.unsupported "type" t
+
+
 
 declareTopLevel :: Declaration -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
+  declaredType <- traverse canonicalType typ
   (TypedExpr typ' e') <- simpleExpression $ exprExp e
-  typ =?? typ'
-  declare id' $ D.Const typ e'
+  case declaredType of
+    Just t -> do
+      t =? typ'
+      declare id' $ D.Const (Right t) e'
+    Nothing -> declare id' $ D.Const typ' e'
 -- err, this should be type checked, but need to refactor decls
 declareTopLevel (Var i _ (Prim (LitFunc sig' block))) = declareTopLevel (Func i sig' block)
-declareTopLevel (Var (Id id') _ (Prim (Make (Channel Bidirectional typ') []))) = do
-  t' <- balsaType typ'
-  declare id' $ D.Chan typ' t'
+declareTopLevel (Var (Id id') t (Prim (Make (Channel Bidirectional typ') []))) = do
+  declaredType <- canonicalType t
+  goType <- canonicalType typ'
+  declaredType =? Right (Types.Chan Bidirectional goType)
+  t' <- canonicalBalsaType goType
+  declare id' $ D.Chan declaredType t'
 declareTopLevel (Var (Id id') typ e) = do
-  t <- balsaType typ
+  declaredType <- canonicalType typ
+  t <- canonicalBalsaType declaredType
   case e of
-    Zero -> declare id' $ D.Var typ t Nothing
+    Zero -> declare id' $ D.Var declaredType t Nothing
     _  -> do
       (TypedExpr t' e') <- simpleExpression $ exprExp e
-      typ =?? t'
-      declare id' $ D.Var typ t (Just e')
+      declaredType =? t'
+      declare id' $ D.Var declaredType t (Just e')
 declareTopLevel (Type id' typ) = do
   balsaType <- typeDecl typ
   BT.declareNamedType (name (unId id')) typ balsaType
   where
-   typeDecl t@(TypeName i) = PT.AliasType pos <$> balsaType t
+   typeDecl t@(TypeName i) = PT.AliasType pos <$> (canonicalType t >>= canonicalBalsaType)
    typeDecl t@(Struct fields) = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
      where
        fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
-       fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> balsaType typ
+       fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> (canonicalType typ >>= canonicalBalsaType)
    typeDecl t = unsupported "type declaration" t
-declareTopLevel (Func (Id id') sig block) = declare id' =<< mkProcedure sig block
-
-mkProcedure :: Signature -> Block -> TranslateM Decl
-mkProcedure sig block = do
-  M.newContext
-  declareSig sig
-  b <- blockCmd block
-  sigDecl' <- M.popContext
-  return $ D.Proc (FunctionType sig) (D.subContext sigDecl') b
+declareTopLevel (Func (Id id') sig block) = declare id' =<< mkProcedure (unpack id') sig block
 
 true :: PT.Value
 true = PT.IntValue 1
@@ -203,23 +229,8 @@ binOp o = M.unsupported "operator" o
 unId :: Id -> String
 unId (Id id') = unpack id'
 
-sigDecl :: Type -> TranslateM D.Decl
-sigDecl (Channel Input typ) = D.In typ <$> balsaType typ
-sigDecl (Channel Output typ) = D.Out typ <$> balsaType typ
---sigDecl (Channel Bidirectional typ) = PT.ChanDecl pos <$> balsaType typ
-sigDecl t@(TypeName _) = D.Param t <$> balsaType t
-sigDecl t = unsupported "signature type" t
-
-declareParam :: Param -> TranslateM ()
-declareParam (Param (Just (Id id')) t) = do
-  t' <- sigDecl t
-  declare id' t'
-declareParam (Param Nothing t) = do
-  t' <- sigDecl t
-  declare "_" t'
-
 declareSig :: Signature -> TranslateM ()
-declareSig (Signature inputs _) = U.forM_ inputs declareParam
+declareSig (Signature inputs _ _) = U.forM_ inputs declareParam
 
 blockCmd :: Block -> TranslateM PT.Cmd
 blockCmd (Block statements) = do
@@ -314,23 +325,14 @@ cmd f@(ForThree
        c <- D.subContext <$> M.popContext
        return $ PT.ForCmd pos PT.Seq i c cmd'
     b _ = unsupported "ForLoop" f
+
+    interval :: Maybe (Types.Type, PT.Interval)
     interval = do
       (start', end') <- (,) <$> Eval.eval start <*> Eval.eval end
       case (start', end') of
         (Eval.IntegralR t s, Eval.IntegralR _ e) ->
-          return $ (TypeName (Id (goType t)), PT.Interval (s, pred e) $ lookupType t)
+          return $ (Types.Numeric t, PT.Interval (s, pred e) $ lookupType t)
         _ -> Nothing
-
-    goType Eval.Int8 = "int8"
-    goType Eval.Int16 = "int16"
-    goType Eval.Int32 = "int32"
-    goType Eval.Int64 = "int64"
-    goType Eval.Uint8 = "uint8"
-    goType Eval.Uint16 = "uint16"
-    goType Eval.Uint32 = "uint32"
-    goType Eval.Uint64 = "uint64"
-    goType Eval.GoInt = "int"
-    goType Eval.GoUint = "uint"
 
     lookupType Eval.Int8 = Builtins.int8
     lookupType Eval.Int16 = Builtins.int16
@@ -384,8 +386,7 @@ unOpExpr e f = do
   mayExpr <- exprExp e
   case mayExpr of
     Just (TypedExpr t e') -> do
---      bType <- lift $ maybe (return PT.NoType) (balsaType . snd) t
-      bType <- return PT.NoType
+      bType <- lift $ canonicalBalsaType $ explicitType t
       return $ Just $ TypedExpr t $ f bType e'
     Nothing -> return Nothing
 
@@ -414,19 +415,22 @@ exprExp (UnOp Receive (Prim (Qual Nothing (Id chan)))) = do
            expr = PT.NameExpr pos name
          return (input, Just (explicit goType expr))
        where
-         receiveType :: D.Decl -> TranslateM (Type, PT.Type)
          receiveType (D.In goType balsaType) = return (goType, balsaType)
          receiveType (D.Chan goType balsaType) = return (goType, balsaType)
-         receiveType s = M.unsupported "chan or <-chan" (show s)
-
-exprExp (BinOp op e e') = do
+         receiveType _ = M.unsupported "chan or <-chan" ""
+exprExp b@(BinOp op e e') = do
   op' <- lift (binOp op)
-  mayExprs <- (,) <$$> exprExp e <**> exprExp e'
-  case mayExprs of
-    -- Todo add type inference here
-    Just (a,b) ->
-      return $ Just $ TypedExpr Nothing $ PT.BinExpr pos PT.NoType op' (balsaExpr a) (balsaExpr b)
-    Nothing -> return Nothing
+  (a, b) <- (,) <$> forceExp e <*> forceExp e'
+  goType' <- lift $ binType op (goType a) (goType b)
+  bType <- lift $ canonicalBalsaType $ explicitType goType'
+  return $ Just $ TypedExpr goType' $ PT.BinExpr pos bType op' (balsaExpr a) (balsaExpr b)
+  where
+    binType _ a b = do
+      let
+        a' :: Types.Type
+        a' = either Types.defaultType id a
+      a' =? b
+      return a
 exprExp e = lift $ M.unsupported "expr" e
 
 forceExp :: Expr -> ExprFT ExprCmd
@@ -447,20 +451,30 @@ primExp :: Prim -> ExprT ExprCmd
 primExp (LitInt i) = mkExpr $ implicit Types.DefaultInt $ PT.ValueExpr pos byte (PT.IntValue i)
 primExp (LitStr s) = mkExpr $ implicit Types.DefaultString $ PT.ValueExpr pos string (PT.StringValue (unpack s))
 -- todo add type checking here
-primExp (Qual (Just struct) id') = mkExpr $ TypedExpr Nothing $ PT.RecElemExpr pos (PT.NameExpr pos (unId struct)) (unId id')
+primExp p@(Qual (Just (Id struct)) id') = do
+  s <- lift $ M.lookup' struct
+  case s of
+    (D.Var t _ _) -> go t
+    (D.Const (Right t) _) -> go t
+    _ -> lift $ M.unsupported "accessor" p
+  where
+    go (Types.Struct fields) = do
+      let field = lookup id' fields
+      case field of
+        Nothing -> lift $ M.notDefined (unId id')
+        (Just t) -> mkExpr $ explicit t $ PT.RecElemExpr pos (PT.NameExpr pos (unpack struct)) (unId id')
 primExp (Qual Nothing (Id id')) = do
   typ' <- lift $ do
-    var <- M.lookup id'
+    var <- M.lookup' id'
     case var of
-      (Just (D.Var t _ _)) -> return t
-      (Just (D.Chan t _)) -> return $ Channel Bidirectional t
-      (Just (D.In t _)) -> return $ Channel Input t
-      (Just (D.Out t _)) -> return $ Channel Output t
-      (Just (D.Const t _)) -> return t
-      (Just (D.Param t _)) -> return t
-      (Just (D.Proc t _ _)) -> return t
-      Nothing -> M.notDefined (unpack id')
-  mkExpr $ explicit typ' $ PT.NameExpr pos (unpack id')
+      (D.Var t _ _) -> return $ Right t
+      (D.Chan t _) -> return $ Right $ Types.Chan Bidirectional t
+      (D.In t _) -> return $ Right $ Types.Chan Input t
+      (D.Out t _) -> return $ Right $ Types.Chan Output t
+      (D.Const t _) -> return t
+      (D.Param t _) -> return $ Right t
+      (D.Proc t _ _ _) -> return $ Right t
+  mkExpr $ TypedExpr typ' $ PT.NameExpr pos (unpack id')
 primExp (LitFunc sig block) = do
   (c, i) <- lift $ do
     M.newContext
@@ -468,7 +482,8 @@ primExp (LitFunc sig block) = do
     declareTopLevel $ Func (Id id') sig block
     c' <- D.subContext <$> M.popContext
     return (c', id')
-  alterCmd (PT.BlockCmd pos c) (mkExpr $ explicit (FunctionType sig) $ PT.NameExpr pos (unpack i))
+  t' <- lift $ canonicalType (FunctionType sig)
+  alterCmd (PT.BlockCmd pos c) (mkExpr $ explicit t' $ PT.NameExpr pos (unpack i))
 -- TODO: add type checking here
 primExp (Call p es me) = do
   callable <- primExp p
@@ -479,19 +494,19 @@ primExp (Call p es me) = do
         call = PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) exprs
       alterCmd (call `andThen`) (return Nothing)
     _ -> lift $ M.unsupported "callable" callable
-primExp (Slice p me (Just end)) = do
+primExp s@(Slice p me (Just end)) = do
   args <- (,,) <$$> primExp p <**> exprExp start <**> exprExp end
-  forM args (return . slice)
+  forM args slice
   where
-    slice ((TypedExpr _ p), (TypedExpr _ s), (TypedExpr _ e)) = TypedExpr Nothing $ PT.SliceExpr pos p s e
+    slice ((TypedExpr (Right (Types.Array _ itemType)) p), (TypedExpr _ se@(PT.ValueExpr _ _ (PT.IntValue s))), (TypedExpr _ ee@(PT.ValueExpr _ _ (PT.IntValue e)))) = return $ explicit (Types.Array (e - s) itemType) $ PT.SliceExpr pos p se ee
+    slice _ = lift $ M.unsupported "slice statement" s
     start = fromMaybe (Prim (LitInt 0)) me
 primExp s@(Slice _ _ Nothing) = lift $ M.unsupported "slice expression with no end" s
 primExp (Index p e) = do
   m <- (,) <$$> primExp p <**> exprExp e
   forM m $ uncurry index
   where
-    index (TypedExpr (Just (Right (ArrayType _ t))) arr) (TypedExpr _ i) = return $ explicit t $ PT.IndexExpr pos arr i
-
+    index (TypedExpr (Right (Types.Array _ t)) arr) (TypedExpr _ i) = return $ explicit t $ PT.IndexExpr pos arr i
 primExp (Paren e) = exprExp e
 primExp s = lift $ M.unsupported  "primitive" s
 
@@ -499,15 +514,15 @@ simpleExp :: Simp -> TranslateM ExprCmd
 simpleExp Empty = return $ ExprCmd Nothing Nothing
 simpleExp (Inc e) = simpleExp $ Assign e $ BinOp Operators.Add e (Prim (LitInt 1))
 simpleExp (Dec e) = simpleExp $ Assign e $ BinOp Operators.Subtract e (Prim (LitInt 1))
-simpleExp (Send chan e) = runContT ma return
+simpleExp s@(Send chan e) = runContT ma return
   where
-    checkSend (Channel Input _) _ = M.unsupported "sending on input channel" e
-    checkSend (Channel _ t) t' = t =?? t'
+    checkSend (Types.Chan Input _) _ = M.unsupported "sending on input channel" e
+    checkSend (Types.Chan _ t) t' = t =? t'
     checkSend t _ = M.unsupported "sending on non channel" t
     ma = do
       chan' <- exprExp chan
       case chan' of
-        (Just (TypedExpr (Just (Right chanType)) (PT.NameExpr _ id'))) -> do
+        (Just (TypedExpr (Right chanType) (PT.NameExpr _ id'))) -> do
           (TypedExpr t e') <- forceExp e
           lift $ checkSend chanType t
           let
@@ -517,13 +532,49 @@ simpleExp (Send chan e) = runContT ma return
 simpleExp s@(SimpVar (Id id') e) = runContT ma return
   where
     ma = do
-      (TypedExpr mayType ex) <- forceExp e
-      case mayType of
-        Just (Right t) -> do
-          lift $ do
-            btype <- balsaType t
-            declare id' $ D.Var t btype Nothing
-          return $ ExprCmd (Just $ PT.AssignCmd pos (PT.NameLvalue pos (unpack id')) ex) Nothing
-        _ -> lift $ unsupported "simple expression " s
+      (TypedExpr t ex) <- forceExp e
+      let
+        goType = explicitType t
+      lift $ do
+        bType <- canonicalBalsaType goType
+        declare id' $ D.Var goType bType Nothing
+      return $ ExprCmd (Just $ PT.AssignCmd pos (PT.NameLvalue pos (unpack id')) ex) Nothing
 simpleExp (SimpleExpr e) = runExprCmd (exprExp e)
 simpleExp s = unsupported "simple expression " s
+
+-- Functions for declaring and calling procedures/ go functions
+
+sigDecl :: Type -> TranslateM Decl
+sigDecl (Channel Input typ) = do
+    c <- canonicalType typ
+    D.In c <$> canonicalBalsaType c
+sigDecl (Channel Output typ) = do
+    c <- canonicalType typ
+    D.Out c <$> canonicalBalsaType c
+--sigDecl (Channel Bidirectional typ) = PT.ChanDecl pos <$> balsaType typ
+--sigDecl t@(TypeName _) = D.Param t <$> balsaType t
+sigDecl t = unsupported "signature type" t
+
+declareParam :: Param -> TranslateM ()
+declareParam (Param (Just (Id id')) t) = do
+  t' <- sigDecl t
+  declare id' t'
+declareParam (Param Nothing t) = do
+  t' <- sigDecl t
+  declare "_" t'
+
+printBuiltin :: Call
+printBuiltin es (Just e) = (Just $ PT.PrintCmd pos (map balsaExpr (es ++ [e])), Nothing)
+printBuiltin es Nothing = (Just $ PT.PrintCmd pos (map balsaExpr es), Nothing)
+
+defaultCall :: String -> Call
+defaultCall id' es _ = (Just $ PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) es, Nothing)
+
+mkProcedure :: String -> Signature -> Block -> TranslateM Decl
+mkProcedure id' sig block = do
+  M.newContext
+  declareSig sig
+  b <- blockCmd block
+  sigDecl' <- M.popContext
+  funcType <- canonicalType (FunctionType sig)
+  return $ D.Proc funcType (D.subContext sigDecl') b (defaultCall id')
