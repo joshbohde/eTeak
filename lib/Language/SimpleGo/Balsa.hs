@@ -17,7 +17,7 @@ import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
                                                        runContT)
 import           Data.Functor.Compose                 (Compose (..))
 import           Data.Maybe                           (fromMaybe)
-import           Data.Text                            (unpack)
+import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
@@ -41,7 +41,10 @@ import qualified ParseTree                            as PT
 import           Print                                (showTree)
 import qualified Report                               as R
 
-type Call = [TypedExpr] -> Maybe TypedExpr -> (Maybe PT.Cmd, Maybe PT.Expr)
+newtype Call = FuncCall { call :: [TypedExpr] -> Maybe TypedExpr -> (Maybe PT.Cmd, Maybe TypedExpr) }
+
+instance Show Call where
+  show _ = ""
 
 type Decl = D.Decl Call
 
@@ -475,24 +478,30 @@ primExp (Qual Nothing (Id id')) = do
       (D.Param t _) -> return $ Right t
       (D.Proc t _ _ _) -> return $ Right t
   mkExpr $ TypedExpr typ' $ PT.NameExpr pos (unpack id')
+-- We emulate function literals by defining a named function in the
+-- current scope. This is not a valid Go identifier so is guaranteed
+-- to not be allowed by the user.
 primExp (LitFunc sig block) = do
-  (c, i) <- lift $ do
-    M.newContext
+  i <- lift $ do
     id' <- M.fresh
     declareTopLevel $ Func (Id id') sig block
-    c' <- D.subContext <$> M.popContext
-    return (c', id')
+    return id'
   t' <- lift $ canonicalType (FunctionType sig)
-  alterCmd (PT.BlockCmd pos c) (mkExpr $ explicit t' $ PT.NameExpr pos (unpack i))
--- TODO: add type checking here
+  mkExpr $ explicit t' $ PT.NameExpr pos (unpack i)
 primExp (Call p es me) = do
   callable <- primExp p
   case callable of
     (Just (TypedExpr _ (PT.NameExpr _ id'))) -> do
-      exprs <- mapM forceExp es
-      let
-        call = PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) exprs
-      alterCmd (call `andThen`) (return Nothing)
+      callable <- lift $ M.lookup' (pack id')
+      case callable of
+         (D.Proc _ _ _ funcCall) -> do
+           exprs <- mapM forceExp es
+           mayExpr <- traverse forceExp me
+           let
+             (cmd', expr) = call funcCall exprs mayExpr
+           case cmd' of
+             Just a -> alterCmd (a `andThen`) (return expr)
+             Nothing -> return expr
     _ -> lift $ M.unsupported "callable" callable
 primExp s@(Slice p me (Just end)) = do
   args <- (,,) <$$> primExp p <**> exprExp start <**> exprExp end
@@ -564,11 +573,14 @@ declareParam (Param Nothing t) = do
   declare "_" t'
 
 printBuiltin :: Call
-printBuiltin es (Just e) = (Just $ PT.PrintCmd pos (map balsaExpr (es ++ [e])), Nothing)
-printBuiltin es Nothing = (Just $ PT.PrintCmd pos (map balsaExpr es), Nothing)
+printBuiltin = FuncCall f
+  where
+    f es (Just e) = (Just $ PT.PrintCmd pos (map balsaExpr (es ++ [e])), Nothing)
+    f es Nothing = (Just $ PT.PrintCmd pos (map balsaExpr es), Nothing)
 
 defaultCall :: String -> Call
-defaultCall id' es _ = (Just $ PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) es, Nothing)
+defaultCall id' = FuncCall f where
+  f es _ = (Just $ PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) es, Nothing)
 
 mkProcedure :: String -> Signature -> Block -> TranslateM Decl
 mkProcedure id' sig block = do
