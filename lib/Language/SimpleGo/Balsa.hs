@@ -9,20 +9,20 @@ module Language.SimpleGo.Balsa  (
   TranslateM, M.runTranslateT, pos, primExp, simpleExp, runExprCmd, ExprCmd(..), TypedExpr(..)
   ) where
 
-import           Control.Monad                        (forM, forM_)
+import           Control.Monad                        (forM, forM_, unless,
+                                                       when)
 import           Control.Monad.Except                 (ExceptT (..), runExceptT,
                                                        withExceptT)
+import           Control.Monad.State                  (get)
 import           Control.Monad.Trans                  (lift, liftIO)
+import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
+                                                       runContT)
 import           Data.Functor.Compose                 (Compose (..))
 import           Data.Maybe                           (fromMaybe)
 import           Data.Text                            (pack, unpack)
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
-import           Control.Monad                        (unless, when)
-import           Control.Monad.State                  (get)
-import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
-                                                       runContT)
 import           Language.Helpers                     (bind, eval, finish, teak,
                                                        writeGates, writeTeak)
 import           Language.SimpleGo.AST
@@ -527,14 +527,3 @@ simpleExp s@(SimpVar (Id id') e) = runContT ma return
         _ -> lift $ unsupported "simple expression " s
 simpleExp (SimpleExpr e) = runExprCmd (exprExp e)
 simpleExp s = unsupported "simple expression " s
-
-
--- data Args = Args [Expr] (Maybe Expr)
-
---print :: S.Args -> TranslateM PT.Cmd
---print (S.Args es (Just e)) = runSideEffects $ do
---  args <- mapM forceExp (es ++ [e])
---  return $ PT.PrintCmd pos args
---print (S.Args es Nothing) = runSideEffects $ do
---  args <- mapM forceExp es
---  return $ PT.PrintCmd pos args
