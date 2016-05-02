@@ -38,7 +38,6 @@ import qualified Language.SimpleGo.Eval               as Eval
 import           Language.SimpleGo.Monad              (declare, unsupported)
 import qualified Language.SimpleGo.Monad              as M
 import           Language.SimpleGo.Process            (compileFile)
-import qualified Language.SimpleGo.Types              as Typed
 import qualified Language.SimpleGo.Types              as Types
 import qualified ParseTree                            as PT
 import           Print                                (showTree)
@@ -73,7 +72,6 @@ runSideEffects ma = getCmd <$> runContT mb return
 simpleExpression :: Cont (Maybe TypedExpr) ExprCmd -> TranslateM TypedExpr
 simpleExpression ma = runExprCmd ma >>= extract
   where
-
     extract e@(ExprCmd (Just _) _) = M.unsupported "expression requires commands to be run" e
     extract (ExprCmd _ (Just e)) = return e
     extract e = M.unsupported "ExprCmd" e
