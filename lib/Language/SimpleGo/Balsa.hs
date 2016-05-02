@@ -184,7 +184,7 @@ declareTopLevel (Var (Id id') t (Prim (Make (Channel Bidirectional typ') []))) =
   goType <- canonicalType typ'
   declaredType =? Right (Types.Chan Bidirectional goType)
   t' <- canonicalBalsaType goType
-  declare id' $ D.Chan declaredType t'
+  declare id' $ D.Chan goType t'
 declareTopLevel (Var (Id id') typ e) = do
   declaredType <- canonicalType typ
   t <- canonicalBalsaType declaredType
