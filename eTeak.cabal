@@ -104,7 +104,9 @@ library
                    Language.SimpleGo.Balsa
                    Language.SimpleGo.Balsa.Builtins
                    Language.SimpleGo.Balsa.Declarations
+                   Language.SimpleGo.Balsa.Functions
                    Language.SimpleGo.Balsa.Types
+                   Language.SimpleGo.Balsa.Unique
                    Language.SimpleGo.Env
                    Language.SimpleGo.Eval
                    Language.SimpleGo.Monad

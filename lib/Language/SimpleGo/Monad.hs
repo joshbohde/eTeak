@@ -1,7 +1,8 @@
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE TypeSynonymInstances  #-}
 -- |
 
 module Language.SimpleGo.Monad (
@@ -19,6 +20,7 @@ import qualified Data.Text                            as T
 import           Language.SimpleGo.AST.Name           (Name (..))
 import qualified Language.SimpleGo.Balsa.Declarations as Declarations
 import qualified Language.SimpleGo.Balsa.Types        as Types
+import           Language.SimpleGo.Balsa.Unique       (UniqueSupply (..))
 import qualified Language.SimpleGo.Env                as Env
 import           Prelude                              hiding (lookup)
 
@@ -54,6 +56,8 @@ instance (Monad m) => Types.TypeNamespace (TranslateT m Declarations.Decl) where
       Just _ -> throwError $ Unsupported $ T.unpack t ++ " is not a type"
   declare (Name i) t = declare i (Declarations.Type t)
   typeError = throwError . TypeError
+
+
 
 
 runTranslateT :: (Monad m) => TranslateT m decl a -> m (Either Msg a)
@@ -101,3 +105,6 @@ fresh = do
   i <- gets idents
   modify' $ \t -> t{idents = succ i}
   return $ "$:" <> T.pack (show i)
+
+instance (Monad m) => UniqueSupply (TranslateT m decl) T.Text where
+  unique = fresh
