@@ -10,7 +10,8 @@ module Language.SimpleGo.Types (
        primitives,
        assignableTo, convertibleTo,
        canTypeAs, defaultType,
-       builtinByte, builtinRune
+       builtinByte, builtinRune,
+       unsignedInteger, integer, float, complex, string, boolean, comparable, ordered
        ) where
 
 import           Prelude                    hiding (lookup)
@@ -126,3 +127,65 @@ convertibleTo t u = assignableTo t u
 underlying :: Type -> Type
 underlying (Named _ t) = t
 underlying t = t
+
+unsignedInteger :: Type -> Bool
+unsignedInteger (Named _ t) = unsignedInteger t
+unsignedInteger (Numeric n) = case n of
+  Uint8 -> True
+  Uint16 -> True
+  Uint32 -> True
+  Uint64 -> True
+  GoUint -> True
+  Uintptr -> True
+  _ -> False
+unsignedInteger _ = False
+
+integer :: Type -> Bool
+integer (Named _ t) = integer t
+integer (Numeric n) = case n of
+  Float32 -> False
+  Float64 -> False
+  _ -> True
+integer _ = False
+
+float :: Type -> Bool
+float (Named _ t) = float t
+float (Numeric n) = case n of
+  Float32 -> True
+  Float64 -> True
+  _ -> False
+float _ = False
+
+complex :: Type -> Bool
+complex (Named _ t) = complex t
+complex (Complex _) = True
+complex _ = False
+
+string :: Type -> Bool
+string (Named _ t) = string t
+string String = True
+string _ = False
+
+boolean :: Type -> Bool
+boolean (Named _ t) = boolean t
+boolean Bool = True
+boolean _ = False
+
+comparable :: Type -> Bool
+comparable (Named _ t) = comparable t
+comparable Bool = True
+comparable (Numeric _) = True
+comparable (Complex _) = True
+comparable String = True
+comparable (Array _ t) = comparable t
+comparable (Ptr _) = True
+comparable UnsafePtr = True
+comparable (Chan _ _) = True
+comparable (Struct ts) = all (comparable . snd) ts
+comparable _ = False
+
+ordered :: Type -> Bool
+ordered (Named _ t) = ordered t
+ordered (Numeric _) = True
+ordered String = True
+ordered _ = False
