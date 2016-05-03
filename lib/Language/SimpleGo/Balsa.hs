@@ -9,7 +9,7 @@ module Language.SimpleGo.Balsa  (
   TranslateM, M.runTranslateT, pos, primExp, simpleExp, runExprCmd, ExprCmd(..), TypedExpr(..)
   ) where
 
-import           Control.Monad                        (forM, forM_)
+import           Control.Monad                        (forM, forM_, (>=>))
 import           Control.Monad.Except                 (ExceptT (..), runExceptT,
                                                        withExceptT)
 import           Control.Monad.Trans                  (lift, liftIO)
@@ -30,6 +30,7 @@ import           Language.SimpleGo.Balsa.Builtins     (bool, byte, string)
 import qualified Language.SimpleGo.Balsa.Builtins     as Builtins
 import           Language.SimpleGo.Balsa.Declarations (Context)
 import qualified Language.SimpleGo.Balsa.Declarations as D
+import qualified Language.SimpleGo.Balsa.Functions    as Func
 import           Language.SimpleGo.Balsa.Types        (canonicalType, (=?))
 import qualified Language.SimpleGo.Balsa.Types        as BT
 import qualified Language.SimpleGo.Eval               as Eval
@@ -87,7 +88,10 @@ data TypedExpr = TypedExpr {
   balsaExpr ::  PT.Expr
   } deriving (Show, Eq)
 
+explicit :: Types.Type -> PT.Expr -> TypedExpr
 explicit t = TypedExpr (Right t)
+
+implicit :: Types.UnTyped -> PT.Expr -> TypedExpr
 implicit u = TypedExpr (Left u)
 
 explicitType = either Types.defaultType id
@@ -231,9 +235,6 @@ binOp o = M.unsupported "operator" o
 
 unId :: Id -> String
 unId (Id id') = unpack id'
-
-declareSig :: Signature -> TranslateM ()
-declareSig (Signature inputs _ _) = U.forM_ inputs declareParam
 
 blockCmd :: Block -> TranslateM PT.Cmd
 blockCmd (Block statements) = do
@@ -551,26 +552,26 @@ simpleExp s@(SimpVar (Id id') e) = runContT ma return
 simpleExp (SimpleExpr e) = runExprCmd (exprExp e)
 simpleExp s = unsupported "simple expression " s
 
--- Functions for declaring and calling procedures/ go functions
 
-sigDecl :: Type -> TranslateM Decl
-sigDecl (Channel Input typ) = do
-    c <- canonicalType typ
-    D.In c <$> canonicalBalsaType c
-sigDecl (Channel Output typ) = do
-    c <- canonicalType typ
-    D.Out c <$> canonicalBalsaType c
---sigDecl (Channel Bidirectional typ) = PT.ChanDecl pos <$> balsaType typ
---sigDecl t@(TypeName _) = D.Param t <$> balsaType t
-sigDecl t = unsupported "signature type" t
+-- Functions for declaring and calling go functions & balsa procedures
 
-declareParam :: Param -> TranslateM ()
-declareParam (Param (Just (Id id')) t) = do
-  t' <- sigDecl t
-  declare id' t'
-declareParam (Param Nothing t) = do
-  t' <- sigDecl t
-  declare "_" t'
+-- declareSig :: Signature Type -> TranslateM ()
+-- declareSig s = do
+--   sig@(Signature i v o) <- traverse canonicalType s
+--   case v of
+--     Just a -> M.unsupported "function declaration with variadic" s
+--     Nothing -> do
+--       args <- signatureArgs
+--   forM_ i (traverse sigDecl >=> declareParam)
+--   where
+--    declareParam (Param (Just (Id id')) d) = declare id' d
+--    declareParam (Param Nothing d) = declare "_" d
+--
+--    sigDecl :: Types.Type -> TranslateM (Either Types.Type Decl)
+--    sigDecl (Types.Chan Input typ) = Right . D.In typ <$> canonicalBalsaType typ
+--    sigDecl (Types.Chan Output typ) = Right . D.Out typ <$> canonicalBalsaType typ
+--    sigDecl t = return $ Left t
+
 
 printBuiltin :: Call
 printBuiltin = FuncCall f
@@ -582,11 +583,30 @@ defaultCall :: String -> Call
 defaultCall id' = FuncCall f where
   f es _ = (Just $ PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) es, Nothing)
 
-mkProcedure :: String -> Signature -> Block -> TranslateM Decl
+mkProcedure :: String -> Signature Type -> Block -> TranslateM Decl
 mkProcedure id' sig block = do
+  canonicalSig <- traverse canonicalType sig
+  let
+    args = Func.signatureArgs canonicalSig
+
   M.newContext
-  declareSig sig
+--  declareSig sig
   b <- blockCmd block
   sigDecl' <- M.popContext
   funcType <- canonicalType (FunctionType sig)
   return $ D.Proc funcType (D.subContext sigDecl') b (defaultCall id')
+
+  where
+    d decl = do
+      id' <- M.fresh
+      declare id' decl
+      return id'
+
+    pDecl Func.Empty = return Nothing
+    pDecl (Func.SimpleChan t) = do
+      decl <- D.Chan t <$> canonicalBalsaType t
+      Just <$> d decl
+    pDecl (Func.BundledChan t) = do
+      decl <- D.Chan t <$> canonicalBalsaType t
+      d decl
+      return Nothing

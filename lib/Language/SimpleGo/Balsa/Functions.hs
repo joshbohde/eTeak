@@ -1,5 +1,6 @@
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveFoldable    #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveTraversable #-}
 -- |
 
 module Language.SimpleGo.Balsa.Functions where
@@ -67,4 +68,66 @@ func multi(tmp5 <-chan multi_in, tmp6 chan<- multi_out){
 
 -}
 
-import qualified Data.Text as T
+import           Data.Maybe              (mapMaybe)
+import           Data.Monoid             ((<>))
+import           Language.SimpleGo.AST   (ChanKind (Input, Output), Id,
+                                          Param (Param), Signature (Signature))
+import qualified Language.SimpleGo.Types as Types
+
+data In t = Passthrough t
+          | Bundle t
+          deriving (Eq, Show, Functor, Foldable, Traversable)
+
+data Out t = Out t
+              deriving (Eq, Show, Functor, Foldable, Traversable)
+
+data Args t = Args {
+  -- The bundled record of non channels args
+  inputs  :: [In t],
+  -- The bundled record of non channels outputs
+  outputs :: [Out t]
+  } deriving (Eq, Show, Functor, Foldable, Traversable)
+
+instance Monoid (Args t) where
+  mempty = Args [] []
+  (Args i o) `mappend` (Args i' o') = Args (i <> i') (o <> o')
+
+signatureArgs :: Signature Types.Type -> Args (Param Types.Type)
+signatureArgs (Signature i _ o) = input i <> output o
+  where
+    mkArg (Param n (Types.Chan Input t)) = Args [Passthrough (Param n t)] []
+    mkArg (Param n (Types.Chan Output t)) = Args [Passthrough (Param n t)] []
+    mkArg p = Args [Bundle p] []
+
+    input = foldMap mkArg
+
+    output = foldMap g
+      where
+        g t = Args [] [Out t]
+
+
+data ProcedureDecl = Empty -- Nothing to be done
+                   -- Just declare a chan of a type
+                   | SimpleChan Types.Type
+                   -- Declare the data type, then the chan
+                   | BundledChan Types.Type
+
+argsDecls :: (Monad m) => m Id -> Args (Param Types.Type) -> m (ProcedureDecl, ProcedureDecl)
+argsDecls fresh (Args ins outs) = do
+  ind <- procDecl (mapMaybe bundled ins)
+  outd <- procDecl (map (unParam . unOut) outs)
+  return (ind, outd)
+  where
+    unParam (Param _ t) = t
+    unOut (Out p) = p
+
+    bundled (Bundle p) = Just (unParam p)
+    bundled _ = Nothing
+
+    procDecl [] = return Empty
+    procDecl [t] = return $ SimpleChan t
+    procDecl ts = BundledChan . Types.Struct <$> traverse field ts
+      where
+       field t = do
+         i <- fresh
+         return (i,t)

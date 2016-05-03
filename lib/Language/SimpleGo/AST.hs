@@ -42,25 +42,25 @@ newtype Id = Id { idText :: T.Text } deriving (Eq, Show, Read)
 data Declaration = Const Id (Maybe Type) Expr
                  | Var Id Type Expr
                  | Type Id Type
-                 | Func Id Signature Block
+                 | Func Id (Signature Type) Block
                  deriving (Eq, Read, Show)
 
 data Rec = Rec Bool (Maybe Id) Type
          deriving (Eq, Read, Show)
 
-data Signature = Signature {
-  input    :: U.Vector Param,
-  variadic :: Maybe Param,
-  output   :: U.Vector Param
-  } deriving (Eq, Read, Show)
+data Signature t = Signature {
+  input    :: U.Vector (Param t),
+  variadic :: Maybe (Param t),
+  output   :: U.Vector (Param t)
+  } deriving (Eq, Read, Show, Functor, Foldable, Traversable)
 
-data Param = Param (Maybe Id) Type
-           deriving (Eq, Read, Show)
+data Param t = Param (Maybe Id) t
+           deriving (Eq, Read, Show, Functor, Foldable, Traversable)
 
 data Type = TypeName Id
           | ArrayType Expr Type
           | Channel ChanKind Type
-          | FunctionType Signature
+          | FunctionType (Signature Type)
           | MapType Type Type
           | PointerType Type
           | SliceType Type
@@ -85,7 +85,7 @@ data Prim = LitInt  !Integer
           | LitImag !Float
           | LitChar !Char
           | LitStr  !T.Text
-          | LitFunc Signature Block
+          | LitFunc (Signature Type) Block
           | LitComp Type [Expr]
           | Qual (Maybe Id) Id                              -- 'PrimaryExpr/Operand/QualifiedIdent'
           | Method Rec Id                        -- 'PrimaryExpr/Operand/MethodExpr'

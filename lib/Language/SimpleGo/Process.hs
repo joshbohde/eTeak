@@ -148,13 +148,13 @@ compileDecl d = throwError $ "unsupported declaration: " ++ show d
 asId :: Go.GoId -> S.Id
 asId (Go.GoId i) = S.Id (fromString i)
 
-asSig :: MonadError String m => Go.GoSig -> m S.Signature
+asSig :: MonadError String m => Go.GoSig -> m (S.Signature S.Type)
 asSig (Go.GoSig input output) = S.Signature <$> toParams input <*> pure Nothing <*> toParams output
 
-toParams :: forall m. MonadError String m => [Go.GoParam] -> m (U.Vector S.Param)
+toParams :: forall m. MonadError String m => [Go.GoParam] -> m (U.Vector (S.Param S.Type))
 toParams ps = U.fromList <$> mapM toParam ps
   where
-    toParam :: Go.GoParam -> m S.Param
+    toParam :: Go.GoParam -> m (S.Param S.Type)
     toParam (Go.GoParam [] typ) = S.Param Nothing <$> asType typ
     toParam (Go.GoParam [i] typ) = S.Param (Just $ asId i) <$> asType typ
     toParam (Go.GoParam _ _) = throwError "only parameters of exactly one identifier are supported"
