@@ -18,6 +18,7 @@ import           Control.Monad.Trans.Cont             (ContT (..), mapContT,
 import           Data.Functor.Compose                 (Compose (..))
 import           Data.Maybe                           (fromMaybe)
 import           Data.Text                            (pack, unpack)
+import           Data.Vector                          ((!?))
 import qualified Data.Vector                          as U
 
 import qualified Context                              as C
@@ -589,16 +590,37 @@ mkProcedure id' sig block = do
 
     declareSig :: Signature Types.Type -> Func.ArgConvention -> Func.ArgConvention -> Block -> TranslateM Block
     declareSig s@(Signature _ (Just _)  _) _ _ _ = M.unsupported "function declaration with variadic" s
-    declareSig s@(Signature i _ _) inConv outConv b = do
+    declareSig s@(Signature inputs _ _) inConv outConv b = do
       forM_ kept decl
       let
         inType = Types.Chan Input <$> Func.argType inConv
         outType = Types.Chan Output <$> Func.argType outConv
       inParam <- traverse newParam inType
       outParam <- traverse newParam outType
-      return b
+      (maybe return addBlockPrelude inParam) b
       where
         decl = traverse sigDecl >=> declareParam
+
+        recStatement (Just id') e = Simple $ SimpVar id' (UnOp Receive e)
+        recStatement Nothing e = Simple $ SimpleExpr (UnOp Receive e)
+
+        prependBlock s (Block stmts) = Block (U.cons s stmts)
+        concatBlock s' (Block stmts) = Block ((U.++) (U.fromList s') stmts)
+
+
+        addBlockPrelude (Param Nothing _) block = M.internalError "need a named parameter in generated parameter"
+        addBlockPrelude (Param (Just inputName) _) block = case inConv of
+          Func.Empty -> return block
+          (Func.Single _ (Param varName _)) ->
+              return $ prependBlock (recStatement varName (Prim (Qual Nothing inputName))) block
+          (Func.Bundled _ fields) -> do
+            tmp <- Id <$> M.fresh
+            let
+              tmp' = recStatement (Just tmp) (Prim (Qual Nothing inputName))
+            stmts <- forM fields $ \(fieldName, _, (Param varName _)) -> do
+              return $ recStatement varName (Prim (Qual (Just tmp) fieldName))
+            return $ concatBlock (tmp':stmts) block
+
 
         newParam t = do
             name <- M.fresh
@@ -614,7 +636,7 @@ mkProcedure id' sig block = do
         sigDecl (Types.Chan Output typ) = D.Out typ <$> canonicalBalsaType typ
         sigDecl t = M.unsupported "signature type" t
 
-        kept = passthrough i
+        kept = passthrough inputs
 
         passthrough = case inConv of
           Func.Empty -> id

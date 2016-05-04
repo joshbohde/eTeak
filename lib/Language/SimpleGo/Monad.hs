@@ -7,7 +7,7 @@
 
 module Language.SimpleGo.Monad (
   TranslateT, Msg(..),
-  runTranslateT, unsupported, declare, popContext, newContext, notDefined,
+  runTranslateT, unsupported, declare, internalError, popContext, newContext, notDefined,
   lookup, lookup', fresh
   ) where
 
@@ -25,6 +25,7 @@ import qualified Language.SimpleGo.Env                as Env
 import           Prelude                              hiding (lookup)
 
 data Msg = Unsupported String
+         | InternalError String
          | EnvironmentError Env.Error
          | TypeError Types.TypeError
          | Undefined String
@@ -68,6 +69,9 @@ unsupported construct a = throwError $ Unsupported $ "unsupported " ++ construct
 
 notDefined :: (Monad m) => String -> TranslateT m decl a
 notDefined id' = throwError $ Undefined id'
+
+internalError :: (Monad m) => String -> TranslateT m decl a
+internalError s = throwError $ InternalError s
 
 declare :: (Monad m) => T.Text -> decl -> TranslateT m decl ()
 declare t d = do
