@@ -2,12 +2,27 @@
 -- |
 
 module Language.SimpleGo.Transforms (
-  exprM, expr, replaceIota
+  exprM, expr, replaceIota, statementM
   ) where
 
 import           Control.Monad.Identity (runIdentity)
 import           Language.SimpleGo.AST
 
+
+-- Shallowly alter statements
+-- does not go all the way down to leaves, because of scoping
+statementM :: Monad m => (Statement -> m Statement)
+           -> Statement -> m Statement
+statementM ma s = f s >>= ma
+  where
+    block (Block stmts) = Block <$> traverse f stmts
+
+    f (StmtBlock b) = StmtBlock <$> block b
+    f (If c b mayStmt) = If c <$> block b <*> traverse f mayStmt
+    f (ForWhile me b) = ForWhile me <$> block b
+    f (ForThree stmt me stmt' b) = ForThree stmt me stmt' <$> block b
+    f (ForRange es e assign b) = ForRange es e assign <$> block b
+    f s' = pure s'
 
 -- Change expressions
 exprM :: Monad m => (Expr -> m Expr)

@@ -558,33 +558,12 @@ simpleExp s = unsupported "simple expression " s
 
 -- Functions for declaring and calling go functions & balsa procedures
 
--- declareSig :: Signature Type -> TranslateM ()
--- declareSig s = do
---   sig@(Signature i v o) <- traverse canonicalType s
---   case v of
---     Just a -> M.unsupported "function declaration with variadic" s
---     Nothing -> do
---       args <- signatureArgs
---   forM_ i (traverse sigDecl >=> declareParam)
---   where
---    declareParam (Param (Just (Id id')) d) = declare id' d
---    declareParam (Param Nothing d) = declare "_" d
---
---    sigDecl :: Types.Type -> TranslateM (Either Types.Type Decl)
---    sigDecl (Types.Chan Input typ) = Right . D.In typ <$> canonicalBalsaType typ
---    sigDecl (Types.Chan Output typ) = Right . D.Out typ <$> canonicalBalsaType typ
---    sigDecl t = return $ Left t
-
-
 printBuiltin :: Call
 printBuiltin = FuncCall f
   where
     f es (Just e) = (Just $ PT.PrintCmd pos (map balsaExpr (es ++ [e])), Nothing)
     f es Nothing = (Just $ PT.PrintCmd pos (map balsaExpr es), Nothing)
 
-defaultCall :: String -> Call
-defaultCall id' = FuncCall f where
-  f es _ = (Just $ PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) es, Nothing)
 
 mkProcedure :: String -> Signature Type -> Block -> TranslateM Decl
 mkProcedure id' sig block = do
@@ -592,26 +571,63 @@ mkProcedure id' sig block = do
   let
     args = Func.signatureArgs canonicalSig
 
+  (inConvention, outConvention) <- Func.conventions (fmap Id M.fresh) args
+  declareNewType inConvention
+  declareNewType outConvention
+
   M.newContext
---  declareSig sig
-  b <- blockCmd block
+  newBlock <- declareSig canonicalSig inConvention outConvention block
+  b <- blockCmd newBlock
   sigDecl' <- M.popContext
   funcType <- canonicalType (FunctionType sig)
   return $ D.Proc funcType (D.subContext sigDecl') b (defaultCall id')
 
   where
-    d decl = do
-      id' <- M.fresh
-      declare id' decl
-      return id'
+    declareNewType conv = case Func.newType conv of
+      (Just (i, t)) -> declareType i t
+      _ -> return ()
 
-    -- declarations before declaring a procedure.
-    pDecl Func.Empty = return Nothing
-    pDecl (Func.SimpleChan t) = do
-      decl <- D.Chan t <$> canonicalBalsaType t
-      Just <$> d decl
-    pDecl (Func.BundledChan t) = do
-      typeName <- M.fresh
-      declareType (Id typeName) t
-      decl <- D.Chan t <$> canonicalBalsaType (Types.Named (name typeName) t)
-      Just <$> d decl
+    declareSig :: Signature Types.Type -> Func.ArgConvention -> Func.ArgConvention -> Block -> TranslateM Block
+    declareSig s@(Signature _ (Just _)  _) _ _ _ = M.unsupported "function declaration with variadic" s
+    declareSig s@(Signature i _ _) inConv outConv b = do
+      forM_ kept decl
+      let
+        inType = Types.Chan Input <$> Func.argType inConv
+        outType = Types.Chan Output <$> Func.argType outConv
+      inParam <- traverse newParam inType
+      outParam <- traverse newParam outType
+      return b
+      where
+        decl = traverse sigDecl >=> declareParam
+
+        newParam t = do
+            name <- M.fresh
+            let p = Param (Just (Id name)) t
+            decl p
+            return p
+
+        declareParam (Param (Just (Id id')) d) = declare id' d
+        declareParam (Param Nothing d) = declare "_" d
+
+        sigDecl :: Types.Type -> TranslateM Decl
+        sigDecl (Types.Chan Input typ) = D.In typ <$> canonicalBalsaType typ
+        sigDecl (Types.Chan Output typ) = D.Out typ <$> canonicalBalsaType typ
+        sigDecl t = M.unsupported "signature type" t
+
+        kept = passthrough i
+
+        passthrough = case inConv of
+          Func.Empty -> id
+          (Func.Single i _) -> f i
+            where
+              f i a = U.take (pred i) s U.++ e
+                where
+                  (s, e) = U.splitAt i a
+          (Func.Bundled _ ps) -> U.ifilter (\i _ -> elem i ixs)
+            where
+              ixs = map ix ps
+              ix (_, i, _) = i
+
+    defaultCall :: String -> Call
+    defaultCall id' = FuncCall f where
+      f es _ = (Just $ PT.CallCmd pos (PT.NameCallable pos id') C.EmptyContext $ map (PT.ExprProcActual . balsaExpr) es, Nothing)

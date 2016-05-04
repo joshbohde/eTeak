@@ -68,18 +68,20 @@ func multi(tmp5 <-chan multi_in, tmp6 chan<- multi_out){
 
 -}
 
-import           Data.Maybe              (mapMaybe)
-import           Data.Monoid             ((<>))
-import           Language.SimpleGo.AST   (ChanKind (Input, Output), Id,
-                                          Param (Param), Signature (Signature))
-import qualified Language.SimpleGo.Types as Types
+import           Data.Maybe                 (mapMaybe)
+import           Data.Monoid                ((<>))
+import           Language.SimpleGo.AST      (ChanKind (Input, Output), Id (..),
+                                             Param (Param),
+                                             Signature (Signature))
+import           Language.SimpleGo.AST.Name (name)
+import qualified Language.SimpleGo.Types    as Types
 
 data In t = Passthrough t
           | Bundle t
           deriving (Eq, Show, Functor, Foldable, Traversable)
 
 data Out t = Out t
-              deriving (Eq, Show, Functor, Foldable, Traversable)
+           deriving (Eq, Show, Functor, Foldable, Traversable)
 
 data Args t = Args {
   -- The bundled record of non channels args
@@ -105,29 +107,48 @@ signatureArgs (Signature i _ o) = input i <> output o
       where
         g t = Args [] [Out t]
 
+-- A data type representing how the args to a function should be converted for a procedure
+data ArgConvention =
+  -- Nothing to be done, the procedure can take these args as is
+  Empty
+  -- A single argument to the procedure needs to be passed in as a chan
+  | Single Int (Param Types.Type)
+  -- A named group of arguments needs to be bundled, passed in a chan, and then unbundled
+  | Bundled Id [(Id, Int, Param Types.Type)]
+  deriving (Eq, Show)
 
-data ProcedureDecl = Empty -- Nothing to be done
-                   -- Just declare a chan of a type
-                   | SimpleChan Types.Type
-                   -- Declare the data type, then the chan
-                   | BundledChan Types.Type
-
-argsDecls :: (Monad m) => m Id -> Args (Param Types.Type) -> m (ProcedureDecl, ProcedureDecl)
-argsDecls fresh (Args ins outs) = do
-  ind <- procDecl (mapMaybe bundled ins)
-  outd <- procDecl (map (unParam . unOut) outs)
+conventions :: (Monad m) => m Id -> Args (Param Types.Type) -> m (ArgConvention, ArgConvention)
+conventions fresh (Args ins outs) = do
+  ind <- procDecl (mapMaybe bundled (indexed ins))
+  outd <- procDecl $ indexed $ map unOut outs
   return (ind, outd)
   where
-    unParam (Param _ t) = t
+    indexed = zip [0..]
     unOut (Out p) = p
 
-    bundled (Bundle p) = Just (unParam p)
+    bundled (i, Bundle p) = Just (i, p)
     bundled _ = Nothing
 
     procDecl [] = return Empty
-    procDecl [t] = return $ SimpleChan t
-    procDecl ts = BundledChan . Types.Struct <$> traverse field ts
+    procDecl [(i, p)] = return $ Single i p
+    procDecl ps = Bundled <$> fresh <*> traverse field ps
       where
-       field t = do
-         i <- fresh
-         return (i,t)
+       field (i, p) = do
+         name' <- fresh
+         return (name', i, p)
+
+-- The instantiated type of the args
+argType :: ArgConvention -> Maybe Types.Type
+argType Empty = Nothing
+argType (Single _ (Param _ t))  = Just t
+argType (Bundled (Id id') fs) = Just $ Types.Named (name id') struct
+  where
+    struct = Types.Struct $ map (\(i, _, Param _ t) -> (i, t))  fs
+
+-- If we would need to make a new type, return enough info here to declare it
+newType :: ArgConvention -> Maybe (Id, Types.Type)
+newType Empty = Nothing
+newType (Single _ _)  = Nothing
+newType (Bundled id' fs) = Just (id', struct)
+  where
+    struct = Types.Struct $ map (\(i, _, Param _ t) -> (i, t))  fs
