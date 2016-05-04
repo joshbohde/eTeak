@@ -174,6 +174,16 @@ canonicalBalsaType (Types.Func _) = return PT.NoType
 canonicalBalsaType t = M.unsupported "type" t
 
 
+declareType :: Id -> Types.Type -> TranslateM ()
+declareType id' t = do
+  balsaType <- mkType t
+  BT.declareType (name (unId id')) t balsaType
+  where
+   mkType (Types.Struct fields) = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
+     where
+       fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> canonicalBalsaType typ
+   mkType t = PT.AliasType pos <$> canonicalBalsaType t
+
 
 declareTopLevel :: Declaration -> TranslateM ()
 declareTopLevel (Const (Id id') typ e) = do
@@ -202,15 +212,8 @@ declareTopLevel (Var (Id id') typ e) = do
       declaredType =? t'
       declare id' $ D.Var declaredType t (Just e')
 declareTopLevel (Type id' typ) = do
-  balsaType <- typeDecl typ
-  BT.declareNamedType (name (unId id')) typ balsaType
-  where
-   typeDecl t@(TypeName i) = PT.AliasType pos <$> (canonicalType t >>= canonicalBalsaType)
-   typeDecl t@(Struct fields) = PT.RecordType D.pos <$> traverse fieldDecl fields <*> pure PT.NoType
-     where
-       fieldDecl :: (Id, Type) -> TranslateM PT.RecordElem
-       fieldDecl (id', typ) = PT.RecordElem D.pos (unId id') <$> (canonicalType typ >>= canonicalBalsaType)
-   typeDecl t = unsupported "type declaration" t
+  t' <- canonicalType typ
+  declareType id' t'
 declareTopLevel (Func (Id id') sig block) = declare id' =<< mkProcedure (unpack id') sig block
 
 true :: PT.Value
@@ -602,11 +605,13 @@ mkProcedure id' sig block = do
       declare id' decl
       return id'
 
+    -- declarations before declaring a procedure.
     pDecl Func.Empty = return Nothing
     pDecl (Func.SimpleChan t) = do
       decl <- D.Chan t <$> canonicalBalsaType t
       Just <$> d decl
     pDecl (Func.BundledChan t) = do
-      decl <- D.Chan t <$> canonicalBalsaType t
-      d decl
-      return Nothing
+      typeName <- M.fresh
+      declareType (Id typeName) t
+      decl <- D.Chan t <$> canonicalBalsaType (Types.Named (name typeName) t)
+      Just <$> d decl

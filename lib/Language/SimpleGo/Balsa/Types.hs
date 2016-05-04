@@ -7,6 +7,7 @@ module Language.SimpleGo.Balsa.Types (
   -- * Declaration
   -- $declaration
   declareBuiltins,
+  declareType,
   declareNamedType,
   canonicalType,
   -- * Type Checking
@@ -77,10 +78,13 @@ declareBuiltins = forM_ GoTypes.primitives $ \(n, t) ->
 {-|
     Declare the common pattern of  `type a int`.
 -}
+declareType :: (TypeNamespace m) => Name -> GoTypes.Type -> PT.TypeBody -> m ()
+declareType n t balsaBody = declare n $ TypeDeclaration (GoTypes.Named n t) balsaBody
+
 declareNamedType :: (TypeNamespace m) => Name -> AST.Type -> PT.TypeBody -> m ()
 declareNamedType n t balsaBody = do
-    goType <- canonicalType t
-    declare n $ TypeDeclaration (GoTypes.Named n goType) balsaBody
+  t' <- canonicalType t
+  declareType n t' balsaBody
 
 
 canonicalType :: (TypeNamespace m) => AST.Type -> m GoTypes.Type
